@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     api_gateway_url: str = "http://api-gateway:8000"
     ingestion_service_url: str = "http://ingestion-service:8001"
     embedding_service_url: str = "http://embedding-service:8002"
+    processing_service_url: str = "http://processing-service:8005"
     retrieval_service_url: str = "http://retrieval-service:8003"
     llm_service_url: str = "http://llm-service:8004"
     redis_cache_ttl_seconds: int = 300
@@ -31,6 +32,7 @@ class Settings(BaseSettings):
     embedding_service_port: int = 8002
     retrieval_service_port: int = 8003
     llm_service_port: int = 8004
+    processing_service_port: int = 8005
 
     model_config = SettingsConfigDict(
         env_file=".env",
