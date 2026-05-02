@@ -45,3 +45,17 @@ async def query_documents(request: QueryRequest) -> QueryResponse:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return QueryResponse.model_validate(payload)
+
+
+@app.post("/process")
+async def trigger_processing() -> dict:
+    """Trigger the processing worker to chunk and embed unchunked documents."""
+    try:
+        payload = await post_json(
+            f"{settings.processing_service_url}/process",
+            {},
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return payload
