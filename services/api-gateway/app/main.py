@@ -6,6 +6,8 @@ from shared.schemas.models import (
     OMSCentralScrapeResponse,
     QueryRequest,
     QueryResponse,
+    RedditScrapeRequest,
+    RedditScrapeResponse,
 )
 from shared.utils.config import get_settings
 from shared.utils.service_client import post_json
@@ -32,6 +34,21 @@ async def scrape_omscentral(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return OMSCentralScrapeResponse.model_validate(payload)
+
+
+@app.post("/sources/reddit/scrape", response_model=RedditScrapeResponse)
+async def scrape_reddit(request: RedditScrapeRequest) -> RedditScrapeResponse:
+    try:
+        # Reddit scraping is slow due to rate limits — give it more time
+        payload = await post_json(
+            f"{settings.ingestion_service_url}/sources/reddit/scrape",
+            request.model_dump(),
+            timeout=300.0,
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return RedditScrapeResponse.model_validate(payload)
 
 
 @app.post("/query", response_model=QueryResponse)

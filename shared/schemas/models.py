@@ -87,6 +87,42 @@ class OMSCentralScrapeResponse(BaseModel):
     reviews: list[CourseReview] = Field(default_factory=list)
 
 
+class RedditDocument(BaseModel):
+    document_id: str
+    source_document_id: str
+    source: str = "reddit"
+    title: str
+    url: str
+    author: str
+    score: int = 0
+    num_comments: int = 0
+    published_at: datetime | None = None
+    course_id: str | None = None
+    course_slug: str | None = None
+    course_name: str | None = None
+    course_codes: list[str] = Field(default_factory=list)
+    content: str
+    content_hash: str
+    subreddit: str = "OMSCS"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RedditScrapeRequest(BaseModel):
+    course_slugs: list[str] = Field(default_factory=list)
+    posts_per_course: int = Field(default=10, ge=1, le=50)
+    include_recent: bool = True
+    recent_limit: int = Field(default=25, ge=1, le=100)
+    persist: bool = True
+
+
+class RedditScrapeResponse(BaseModel):
+    source: str = "reddit"
+    documents_scraped: int
+    documents_persisted: int
+    courses_matched: int
+    documents: list[RedditDocument] = Field(default_factory=list)
+
+
 class GenerateAnswerRequest(BaseModel):
     question: str = Field(min_length=1)
     context: list[str]

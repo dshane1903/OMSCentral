@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     omscentral_base_url: str = "https://www.omscentral.com"
     omscentral_request_timeout_seconds: float = 30.0
     omscentral_user_agent: str = "omscs-course-intel/0.1"
+    reddit_request_timeout_seconds: float = 30.0
+    reddit_user_agent: str = "omscs-course-intel/0.1 (by /u/omscs-course-intel)"
     openai_api_key: str = "replace-me"
     openai_embedding_model: str = "text-embedding-3-small"
     openai_chat_model: str = "gpt-4.1-mini"

@@ -9,8 +9,8 @@ a multi-source retrieval system.
 ## Service Topology
 
 - **API Gateway** — public HTTP entrypoint
-- **Ingestion Service** — scrapes OMSCentral, normalizes documents, persists
-  them in Postgres, and publishes `document.ingested` events
+- **Ingestion Service** — scrapes OMSCentral and Reddit r/OMSCS, normalizes
+  documents, persists them in Postgres, and publishes `document.ingested` events
 - **Processing Service** — consumes `document.ingested` events, chunks,
   embeds, writes vectors. Also runs a reconciliation poller as a backstop
 - **Embedding Service** — embedding model wrapper (OpenAI or deterministic
@@ -70,10 +70,23 @@ us at-least-once processing without a full transactional outbox table:
 - **Document deleted between publish and consume** — handler returns True
   (no work to do), message acked
 
+## Data Sources
+
+### OMSCentral
+- catalog discovery via Next.js server payload
+- per-course review scraping and normalization
+- course metadata extraction (codes, credit hours, syllabus)
+
+### Reddit r/OMSCS
+- course-specific search via Reddit's public JSON API
+- recent post scraping for general OMSCS discussion
+- automatic course matching via course code pattern detection
+- post + top comments combined into single documents
+- rate-limited to ~1 req/sec (Reddit's unauthenticated rate limit)
+
 ## Near-Term Evolution
 
-- add Reddit, syllabi, and grade distribution ingestion (each becomes a new
-  document type behind the same processing pipeline)
+- add syllabi and grade distribution ingestion
 - Prometheus metrics on queue depth, consumer lag, embedding throughput,
   retrieval latency
 - citation rendering on retrieved answers

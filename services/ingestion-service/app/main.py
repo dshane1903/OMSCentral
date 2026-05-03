@@ -6,11 +6,15 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 
 from app.scrapers.omscentral import OMSCentralClient
+from app.scrapers.reddit import RedditClient
 from shared.schemas.models import (
     CourseCatalogEntry,
     CourseReview,
     OMSCentralScrapeRequest,
     OMSCentralScrapeResponse,
+    RedditDocument,
+    RedditScrapeRequest,
+    RedditScrapeResponse,
 )
 from shared.utils.config import get_settings
 from shared.utils.db import db_connection, ensure_schema
@@ -250,3 +254,147 @@ async def scrape_omscentral(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     finally:
         await client.aclose()
+
+
+def upsert_reddit_documents(documents: list[RedditDocument]) -> int:
+    """Persist Reddit documents using the same documents table."""
+    if not documents:
+        return 0
+
+    persisted = 0
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            for doc in documents:
+                cursor.execute(
+                    """
+                    INSERT INTO documents (
+                        id,
+                        source,
+                        source_document_id,
+                        document_type,
+                        title,
+                        url,
+                        course_id,
+                        course_slug,
+                        course_name,
+                        course_codes,
+                        published_at,
+                        content,
+                        content_hash,
+                        metadata,
+                        chunk_count
+                    )
+                    VALUES (
+                        %(id)s,
+                        %(source)s,
+                        %(source_document_id)s,
+                        'reddit_post',
+                        %(title)s,
+                        %(url)s,
+                        %(course_id)s,
+                        %(course_slug)s,
+                        %(course_name)s,
+                        %(course_codes)s,
+                        %(published_at)s,
+                        %(content)s,
+                        %(content_hash)s,
+                        %(metadata)s::jsonb,
+                        0
+                    )
+                    ON CONFLICT (source, source_document_id) DO UPDATE SET
+                        title = EXCLUDED.title,
+                        url = EXCLUDED.url,
+                        course_id = EXCLUDED.course_id,
+                        course_slug = EXCLUDED.course_slug,
+                        course_name = EXCLUDED.course_name,
+                        course_codes = EXCLUDED.course_codes,
+                        published_at = EXCLUDED.published_at,
+                        content = EXCLUDED.content,
+                        content_hash = EXCLUDED.content_hash,
+                        metadata = EXCLUDED.metadata,
+                        updated_at = NOW()
+                    """,
+                    {
+                        "id": doc.document_id,
+                        "source": doc.source,
+                        "source_document_id": doc.source_document_id,
+                        "title": doc.title,
+                        "url": doc.url,
+                        "course_id": doc.course_id,
+                        "course_slug": doc.course_slug,
+                        "course_name": doc.course_name,
+                        "course_codes": doc.course_codes,
+                        "published_at": doc.published_at,
+                        "content": doc.content,
+                        "content_hash": doc.content_hash,
+                        "metadata": json.dumps({
+                            **doc.metadata,
+                            "author": doc.author,
+                            "score": doc.score,
+                            "num_comments": doc.num_comments,
+                            "subreddit": doc.subreddit,
+                        }),
+                    },
+                )
+                persisted += 1
+        connection.commit()
+
+    return persisted
+
+
+@app.post("/sources/reddit/scrape", response_model=RedditScrapeResponse)
+async def scrape_reddit(request: RedditScrapeRequest) -> RedditScrapeResponse:
+    # We need the course catalog for matching posts to courses.
+    # Fetch it from OMSCentral (or from DB if already cached).
+    omscentral_client = OMSCentralClient(settings)
+    reddit_client = RedditClient(settings)
+
+    try:
+        catalog = await omscentral_client.fetch_catalog()
+
+        all_docs: list[RedditDocument] = []
+
+        # Search for course-specific discussions
+        if request.course_slugs or not request.include_recent:
+            course_docs = await reddit_client.scrape_course_discussions(
+                catalog,
+                course_slugs=request.course_slugs or None,
+                posts_per_course=request.posts_per_course,
+            )
+            all_docs.extend(course_docs)
+
+        # Also grab recent posts if requested
+        if request.include_recent:
+            recent_docs = await reddit_client.scrape_recent_posts(
+                catalog,
+                limit=request.recent_limit,
+            )
+            # Deduplicate against course-specific results
+            seen_ids = {doc.document_id for doc in all_docs}
+            for doc in recent_docs:
+                if doc.document_id not in seen_ids:
+                    all_docs.append(doc)
+                    seen_ids.add(doc.document_id)
+
+        persisted_count = 0
+        if request.persist:
+            persisted_count = upsert_reddit_documents(all_docs)
+            # Publish events for the processing pipeline
+            for doc in all_docs:
+                await publish_document_ingested(doc.document_id)
+
+        courses_matched = sum(1 for doc in all_docs if doc.course_id is not None)
+
+        return RedditScrapeResponse(
+            documents_scraped=len(all_docs),
+            documents_persisted=persisted_count,
+            courses_matched=courses_matched,
+            documents=all_docs,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finally:
+        await omscentral_client.aclose()
+        await reddit_client.aclose()

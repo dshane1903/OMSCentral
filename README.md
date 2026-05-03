@@ -7,8 +7,9 @@ reviews, embeds them, and answers natural-language questions like
 ## Current Services
 
 - `api-gateway` — public HTTP entrypoint, proxies to internal services
-- `ingestion-service` — scrapes OMSCentral, persists normalized review
-  documents in Postgres, and publishes `document.ingested` events to RabbitMQ
+- `ingestion-service` — scrapes OMSCentral and Reddit r/OMSCS, persists
+  normalized review documents in Postgres, and publishes `document.ingested`
+  events to RabbitMQ
 - `processing-service` — consumes `document.ingested` events, chunks the
   document content, calls the embedding service, and writes retrieval-ready
   chunks to pgvector. Also runs a reconciliation poller that picks up any
@@ -64,8 +65,25 @@ curl -X POST http://localhost:8000/sources/omscentral/scrape \
 ```
 
 Each persisted review will produce a `document.ingested` event that the
-processing service picks up automatically. You can also force processing
-synchronously:
+processing service picks up automatically.
+
+Scrape Reddit r/OMSCS discussions:
+
+```bash
+# Scrape recent posts + course-specific discussions
+curl -X POST http://localhost:8000/sources/reddit/scrape \
+  -H "Content-Type: application/json" \
+  -d '{"include_recent":true,"recent_limit":25,"persist":true}'
+
+# Scrape posts about specific courses
+curl -X POST http://localhost:8000/sources/reddit/scrape \
+  -H "Content-Type: application/json" \
+  -d '{"course_slugs":["computer-networks"],"posts_per_course":10,"persist":true}'
+```
+
+Reddit posts flow through the same event-driven pipeline — each persisted
+post publishes a `document.ingested` event, gets chunked and embedded
+automatically. You can also force processing synchronously:
 
 ```bash
 # Process every unchunked document now
@@ -93,13 +111,15 @@ DLQ, and message rates while developing.
 PYTHONPATH=services/ingestion-service:. \
   python3 -m unittest services.ingestion-service.tests.test_omscentral
 
+PYTHONPATH=services/ingestion-service:. \
+  python3 -m unittest services.ingestion-service.tests.test_reddit
+
 PYTHONPATH=. \
   python3 -m unittest services.processing-service.tests.test_messaging
 ```
 
 ## Next Build Targets
 
-- add Reddit, syllabi, and grade distribution ingestion
 - add Prometheus metrics on every service and Grafana dashboards
 - deploy to a public host and put it in front of OMSCS students
 - citation rendering on retrieved answers
