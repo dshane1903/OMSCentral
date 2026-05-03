@@ -12,6 +12,12 @@ class Settings(BaseSettings):
     postgres_port: int = 5432
     redis_host: str = "redis"
     redis_port: int = 6379
+    rabbitmq_host: str = "rabbitmq"
+    rabbitmq_port: int = 5672
+    rabbitmq_user: str = "rag"
+    rabbitmq_password: str = "rag"
+    rabbitmq_retry_delay_ms: int = 30000
+    rabbitmq_consumer_prefetch: int = 4
     document_storage_path: Path = Path("/data/documents")
     omscentral_base_url: str = "https://www.omscentral.com"
     omscentral_request_timeout_seconds: float = 30.0

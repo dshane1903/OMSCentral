@@ -9,7 +9,6 @@ services:
       - "8000:8000"
     depends_on:
       - ingestion-service
-      - processing-service
       - retrieval-service
 
   ingestion-service:
@@ -23,19 +22,10 @@ services:
     volumes:
       - documents:/data/documents
     depends_on:
-      - postgres
-
-  processing-service:
-    build:
-      context: ..
-      dockerfile: services/processing-service/Dockerfile
-    env_file:
-      - ../.env.example
-    ports:
-      - "8005:8005"
-    depends_on:
-      - postgres
-      - embedding-service
+      postgres:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
 
   embedding-service:
     build:
@@ -68,6 +58,22 @@ services:
     ports:
       - "8004:8004"
 
+  processing-service:
+    build:
+      context: ..
+      dockerfile: services/processing-service/Dockerfile
+    env_file:
+      - ../.env.example
+    ports:
+      - "8005:8005"
+    depends_on:
+      postgres:
+        condition: service_started
+      embedding-service:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+
   postgres:
     image: pgvector/pgvector:pg16
     environment:
@@ -85,7 +91,23 @@ services:
     ports:
       - "6379:6379"
 
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: rag
+      RABBITMQ_DEFAULT_PASS: rag
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+
 volumes:
   documents:
   postgres_data:
-
+  rabbitmq_data:

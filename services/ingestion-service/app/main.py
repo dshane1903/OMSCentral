@@ -14,6 +14,7 @@ from shared.schemas.models import (
 )
 from shared.utils.config import get_settings
 from shared.utils.db import db_connection, ensure_schema
+from shared.utils.messaging import publish_document_ingested
 
 app = FastAPI(title="OMSCS Ingestion Service", version="0.2.0")
 settings = get_settings()
@@ -228,6 +229,11 @@ async def scrape_omscentral(
                 upsert_course(course)
                 if request.include_reviews:
                     persisted_document_count += upsert_reviews(reviews)
+                    # Publish events only after the DB write committed.
+                    # If the broker is down the reconciliation poller in the
+                    # processing service will still pick these documents up.
+                    for review in reviews:
+                        await publish_document_ingested(review.document_id)
                 write_snapshot(course, reviews)
 
         return OMSCentralScrapeResponse(
