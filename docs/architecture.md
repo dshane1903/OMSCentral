@@ -2,44 +2,78 @@
 
 ## Goal
 
-Answer course-planning questions for OMSCS students using real student data, starting with OMSCentral reviews and growing into a multi-source retrieval platform.
+Answer course-planning questions for OMSCS students using real student data.
+First slice covers OMSCentral reviews; the platform is designed to grow into
+a multi-source retrieval system.
 
-## Current Shape
+## Service Topology
 
-- **API Gateway** is the public entrypoint.
-- **Ingestion Service** discovers OMSCentral courses, scrapes review pages, normalizes review documents, and stores snapshots plus source-backed records in Postgres.
-- **Postgres + pgvector** stores course metadata, source documents, and later chunk embeddings.
-- **Embedding Service** is ready for the next ingestion stage.
-- **Retrieval Service** is ready to query embedded chunks.
-- **LLM Service** is ready to turn retrieved context into grounded answers.
+- **API Gateway** — public HTTP entrypoint
+- **Ingestion Service** — scrapes OMSCentral, normalizes documents, persists
+  them in Postgres, and publishes `document.ingested` events
+- **Processing Service** — consumes `document.ingested` events, chunks,
+  embeds, writes vectors. Also runs a reconciliation poller as a backstop
+- **Embedding Service** — embedding model wrapper (OpenAI or deterministic
+  fallback)
+- **Retrieval Service** — vector search + LLM orchestration with Redis cache
+- **LLM Service** — grounded answer generation
+- **Postgres + pgvector** — primary store: course catalog, source documents,
+  embedded chunks
+- **Redis** — query result cache
+- **RabbitMQ** — event bus between ingestion and processing
 
-## OMSCentral Flow
+## Event-Driven Pipeline
 
-1. Client calls `POST /sources/omscentral/scrape` on the API gateway.
-2. API gateway forwards the request to the ingestion service.
-3. Ingestion service fetches the OMSCentral homepage and extracts the course catalog from the server-rendered payload.
-4. Ingestion service fetches each selected `/courses/{slug}/reviews` page.
-5. Course metadata and review bodies are normalized into source-backed documents.
-6. Course rows are upserted into `course_catalog`.
-7. Review rows are upserted into `documents`.
-8. JSON snapshots are stored on disk for debugging and downstream processing.
+Documents flow through a topic exchange with a retry-queue dead-letter pattern:
+
+- `documents` topic exchange, routing key `document.ingested`
+- `processing.document.ingested` durable queue, dead-letters to `documents.dlx`
+- `documents.dlx` direct exchange with two bindings:
+  - `retry` → `processing.document.retry` (TTL 30s, dead-letters back to
+    `documents` with the original routing key — message reappears in the main
+    queue after the delay)
+  - `failed` → `processing.document.failed` (terminal DLQ)
+- The consumer counts dead-letterings via the `x-death` header. After
+  `MAX_RETRIES` (default 3) it publishes the message to the terminal DLQ
+  and acks it off the main queue.
+
+## Consistency Model
+
+The Postgres write is the source of truth. Events are a fast-path
+notification — losing one does not lose the work, because the
+reconciliation poller scans for documents with `chunk_count = 0`. This gives
+us at-least-once processing without a full transactional outbox table:
+
+- DB commit succeeds, publish succeeds → consumer processes via event
+- DB commit succeeds, publish fails → poller picks it up within 30s
+- DB commit fails → nothing is published, nothing is processed (correct)
+- Consumer processes a duplicate event → idempotent: `process_one_document`
+  short-circuits when `chunk_count != 0`
 
 ## Data Model
 
-- `course_catalog` stores one row per external course source record.
-- `documents` stores one row per review or future source document.
-- `chunks` remains the downstream table for retrieval-ready text embeddings.
+- `course_catalog` — one row per OMSCentral course
+- `documents` — one row per review or future source document, with
+  `chunk_count` driving processing state (0 = needs chunking, -1 = empty,
+  positive = chunked)
+- `chunks` — embedding rows; ivfflat cosine index for retrieval
 
-## Immediate Tradeoffs
+## Failure Modes
 
-- Review ingestion is synchronous today.
-- Embedding is intentionally deferred so the first milestone stays focused on collecting clean source data.
-- OMSCentral parsing depends on the current Next.js payload and page structure, so parser tests are important as the site evolves.
+- **Broker down at publish time** — publishes are best-effort and logged;
+  reconciler catches up
+- **Broker down at consume time** — consumer reconnects via `connect_robust`;
+  events buffer in the durable queue
+- **Embedding service down** — handler returns False, message routes through
+  retry queue, reattempted after TTL
+- **Bad event payload** — message goes directly to terminal DLQ, no retry
+- **Document deleted between publish and consume** — handler returns True
+  (no work to do), message acked
 
 ## Near-Term Evolution
 
-- move source ingestion onto RabbitMQ
-- add a processing worker for chunking and validation
-- embed review chunks and wire them into retrieval
-- add citation metadata through to final answers
-- expand ingestion to Reddit, syllabi, and grade distributions
+- add Reddit, syllabi, and grade distribution ingestion (each becomes a new
+  document type behind the same processing pipeline)
+- Prometheus metrics on queue depth, consumer lag, embedding throughput,
+  retrieval latency
+- citation rendering on retrieved answers

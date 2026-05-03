@@ -44,6 +44,32 @@ def fetch_unchunked_documents(limit: int = 50) -> list[dict[str, Any]]:
             return list(cur.fetchall())
 
 
+def fetch_document_by_id(document_id: str) -> dict[str, Any] | None:
+    """Load a single document row, regardless of chunk state."""
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    source,
+                    document_type,
+                    title,
+                    course_slug,
+                    course_name,
+                    course_codes,
+                    content,
+                    metadata,
+                    chunk_count
+                FROM documents
+                WHERE id = %s
+                """,
+                (document_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
 def build_chunk_text(doc: dict[str, Any], raw_chunk: str) -> str:
     """Prepend course context to each chunk so retrieval has metadata."""
     meta = doc.get("metadata")
@@ -158,27 +184,8 @@ async def process_unchunked_documents(limit: int = 50) -> dict[str, Any]:
     for doc in documents:
         doc_id = doc["id"]
         try:
-            chunks = chunk_document(doc)
-            if not chunks:
-                # Mark as processed even if no chunks (empty content)
-                with db_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "UPDATE documents SET chunk_count = -1, updated_at = NOW() WHERE id = %s",
-                            (doc_id,),
-                        )
-                    conn.commit()
-                continue
-
-            vectors = await embed_chunks(chunks)
-            written = write_chunks(doc_id, chunks, vectors)
+            written = await _chunk_and_embed(doc)
             total_chunks += written
-            logger.info(
-                "Chunked document %s (%s): %d chunks",
-                doc_id,
-                doc.get("course_slug", "unknown"),
-                written,
-            )
         except Exception as exc:
             logger.error("Failed to process document %s: %s", doc_id, exc)
             errors.append({"document_id": doc_id, "error": str(exc)})
@@ -188,3 +195,59 @@ async def process_unchunked_documents(limit: int = 50) -> dict[str, Any]:
         "chunks_created": total_chunks,
         "errors": errors,
     }
+
+
+async def _chunk_and_embed(doc: dict[str, Any]) -> int:
+    """Chunk one document, embed it, and write the chunks. Returns chunk count."""
+    doc_id = doc["id"]
+    chunks = chunk_document(doc)
+    if not chunks:
+        # Mark as processed even if no chunks (empty content) so we don't
+        # re-scan it forever on the next poll.
+        with db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE documents SET chunk_count = -1, updated_at = NOW() WHERE id = %s",
+                    (doc_id,),
+                )
+            conn.commit()
+        return 0
+
+    vectors = await embed_chunks(chunks)
+    written = write_chunks(doc_id, chunks, vectors)
+    logger.info(
+        "Chunked document %s (%s): %d chunks",
+        doc_id,
+        doc.get("course_slug", "unknown"),
+        written,
+    )
+    return written
+
+
+async def process_one_document(document_id: str) -> bool:
+    """
+    Process a single document by id. Used by the RabbitMQ consumer.
+
+    Returns True if the message can be acked (success or terminal "no content"
+    state), False if the broker should retry. Raises only on programmer errors;
+    expected runtime failures (embedding service down, etc.) return False so
+    the message goes through the retry pipeline.
+    """
+    doc = fetch_document_by_id(document_id)
+    if doc is None:
+        # Document was deleted between publish and consume. Nothing to retry.
+        logger.warning("Document %s not found; acking event", document_id)
+        return True
+
+    if doc.get("chunk_count", 0) and doc["chunk_count"] != 0:
+        # Already processed (positive count) or skipped as empty (-1). Idempotent.
+        logger.debug("Document %s already processed (chunk_count=%s)",
+                     document_id, doc["chunk_count"])
+        return True
+
+    try:
+        await _chunk_and_embed(doc)
+        return True
+    except Exception as exc:
+        logger.error("Processing failed for %s: %s", document_id, exc)
+        return False

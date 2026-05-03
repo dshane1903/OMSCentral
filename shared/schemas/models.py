@@ -107,3 +107,8 @@ class RetrievedChunk(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     chunks: list[RetrievedChunk]
+
+
+class DocumentIngestedEvent(BaseModel):
+    event: str = "document.ingested"
+    document_id: str

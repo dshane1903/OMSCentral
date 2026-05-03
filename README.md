@@ -1,25 +1,53 @@
 # OMSCS Course Intelligence Platform
 
-This repo is the start of a course intelligence product for OMSCS students.
-
-The first shipped slice is an `OMSCentral` ingestion path:
-
-- discover the full OMSCentral catalog from the homepage payload
-- scrape individual course review pages
-- normalize course metadata and review text
-- persist source-backed review documents in Postgres
-- save per-course JSON snapshots for downstream processing
-
-The existing retrieval, embedding, and LLM services are still here so we can grow this into the full cited Q&A experience next.
+A retrieval-augmented Q&A platform for OMSCS students. Ingests course
+reviews, embeds them, and answers natural-language questions like
+"How hard is CS 6250 if I work full-time?" with citations.
 
 ## Current Services
 
-- `api-gateway` proxies public requests into the platform
-- `ingestion-service` scrapes OMSCentral and stores normalized source documents
-- `processing-service` chunks ingested documents, embeds them via the embedding service, and writes retrieval-ready chunks to pgvector (runs as a background poller + manual trigger)
-- `embedding-service` exposes embeddings for the later pipeline stages
-- `retrieval-service` exposes vector retrieval over stored chunks
-- `llm-service` produces grounded answers from retrieved context
+- `api-gateway` — public HTTP entrypoint, proxies to internal services
+- `ingestion-service` — scrapes OMSCentral, persists normalized review
+  documents in Postgres, and publishes `document.ingested` events to RabbitMQ
+- `processing-service` — consumes `document.ingested` events, chunks the
+  document content, calls the embedding service, and writes retrieval-ready
+  chunks to pgvector. Also runs a reconciliation poller that picks up any
+  documents whose events were dropped (broker outage, etc.)
+- `embedding-service` — wraps OpenAI embeddings (with a deterministic
+  fallback for local dev without an API key)
+- `retrieval-service` — vector search over chunks, calls the LLM service
+  with retrieved context, caches answers in Redis
+- `llm-service` — grounded answer generation against retrieved context
+
+## Event-Driven Pipeline
+
+Ingestion and processing are wired through RabbitMQ:
+
+```
+ingestion ──publish──▶ documents (topic exchange)
+                          │  routing key: document.ingested
+                          ▼
+                processing.document.ingested  ◀────────┐
+                          │                            │
+              consumer fails (nack, no requeue)        │ TTL=30s, then dead-letter
+                          ▼                            │ back to documents exchange
+                  documents.dlx (direct)               │
+                   │                                   │
+        ┌──────────┴──────────┐                        │
+        ▼ retry               ▼ failed                 │
+  processing.document.retry   processing.document.failed
+        │                                              │
+        └──────────────────────────────────────────────┘
+```
+
+- The Postgres write is the source of truth. The event is a fast-path
+  notification to the consumer.
+- Failed deliveries are nacked without requeue, which routes them through
+  the DLX into the retry queue for a delayed retry. After `MAX_RETRIES`
+  cycles the message is moved to the terminal DLQ instead of looping.
+- The reconciliation poller in `processing-service` scans Postgres for
+  unchunked documents every 30 seconds, so missing events never cause
+  permanent data loss.
 
 ## Local Run
 
@@ -27,7 +55,7 @@ The existing retrieval, embedding, and LLM services are still here so we can gro
 docker compose -f infra/docker-compose.yml up --build
 ```
 
-Then trigger the first scrape through the gateway:
+Trigger a scrape:
 
 ```bash
 curl -X POST http://localhost:8000/sources/omscentral/scrape \
@@ -35,25 +63,19 @@ curl -X POST http://localhost:8000/sources/omscentral/scrape \
   -d '{"course_slugs":["software-architecture-and-design"],"persist":true}'
 ```
 
-You can also run the scraper directly from the ingestion service:
+Each persisted review will produce a `document.ingested` event that the
+processing service picks up automatically. You can also force processing
+synchronously:
 
 ```bash
-PYTHONPATH=services/ingestion-service:. python3 services/ingestion-service/app/scrape_omscentral.py \
-  --course-slug software-architecture-and-design \
-  --persist
+# Process every unchunked document now
+curl -X POST http://localhost:8005/process
+
+# Process a specific document by id
+curl -X POST http://localhost:8005/process/<document_id>
 ```
 
-Snapshots are written under `DOCUMENT_STORAGE_PATH/omscentral/`.
-
-After ingesting, trigger the processing worker to chunk and embed:
-
-```bash
-curl -X POST http://localhost:8000/process
-```
-
-The processing service also polls automatically every 30 seconds for unchunked documents.
-
-Once documents are chunked and embedded, query the platform:
+Once chunks are embedded, ask a question:
 
 ```bash
 curl -X POST http://localhost:8000/query \
@@ -61,10 +83,23 @@ curl -X POST http://localhost:8000/query \
   -d '{"question":"How hard is CS 6250 if I work full-time?"}'
 ```
 
+The RabbitMQ management UI is exposed on http://localhost:15672
+(user: `rag`, password: `rag`) — useful for inspecting queue depth, the
+DLQ, and message rates while developing.
+
+## Tests
+
+```bash
+PYTHONPATH=services/ingestion-service:. \
+  python3 -m unittest services.ingestion-service.tests.test_omscentral
+
+PYTHONPATH=. \
+  python3 -m unittest services.processing-service.tests.test_messaging
+```
+
 ## Next Build Targets
 
-- wire ingestion → processing onto RabbitMQ (event-driven pipeline)
 - add Reddit, syllabi, and grade distribution ingestion
-- add Prometheus metrics and Grafana dashboards
-- deploy to a public host and get real users
-- return cited answers for semester planning questions
+- add Prometheus metrics on every service and Grafana dashboards
+- deploy to a public host and put it in front of OMSCS students
+- citation rendering on retrieved answers
