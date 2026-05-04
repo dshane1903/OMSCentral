@@ -56,6 +56,18 @@ ingestion ──publish──▶ documents (topic exchange)
 docker compose -f infra/docker-compose.yml up --build
 ```
 
+Run the frontend in another shell:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+The frontend runs on http://localhost:5173 and talks to the API gateway at
+http://localhost:8000 by default. Override `VITE_API_BASE_URL` for other API
+targets.
+
 Trigger a scrape:
 
 ```bash

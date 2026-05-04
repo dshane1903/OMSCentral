@@ -1,5 +1,6 @@
 import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from shared.schemas.models import (
     CourseCatalogEntry,
@@ -19,6 +20,18 @@ from shared.utils.service_client import get_json, post_json
 app = FastAPI(title="OMSCS Course Intelligence API Gateway", version="0.2.0")
 instrument_fastapi_app(app, "api-gateway")
 settings = get_settings()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        origin.strip()
+        for origin in settings.frontend_cors_origins.split(",")
+        if origin.strip()
+    ],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+    allow_origin_regex=settings.frontend_cors_origin_regex or None,
+)
 
 
 @app.get("/health")

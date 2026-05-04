@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     retrieval_service_port: int = 8003
     llm_service_port: int = 8004
     processing_service_port: int = 8005
+    frontend_cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    frontend_cors_origin_regex: str = r"http://(localhost|127\.0\.0\.1):[0-9]+"
 
     model_config = SettingsConfigDict(
         env_file=".env",
