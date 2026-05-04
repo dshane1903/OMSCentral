@@ -118,6 +118,16 @@ Grafana is provisioned with the Prometheus datasource and an `OMSCS Service
 Overview` dashboard covering request rate, 5xx rate, p95 latency, in-flight
 requests, RabbitMQ queue depth, and scrape health.
 
+Application-level metrics include scrape runs, persisted documents, RabbitMQ
+publish outcomes, processed documents, chunks created, embedding batches/texts,
+query latency, retrieval cache hits/misses, and LLM generation outcomes.
+
+## Deployment
+
+Deployment planning lives in [docs/deployment.md](docs/deployment.md). The
+recommended production path is AWS ECS Fargate with RDS Postgres, ElastiCache
+Redis, Amazon MQ, private Prometheus/Grafana, Terraform, and GitHub Actions.
+
 ## Tests
 
 ```bash

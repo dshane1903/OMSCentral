@@ -138,11 +138,43 @@ class RetrievedChunk(BaseModel):
     chunk_index: int
     score: float
     text: str
+    source: str | None = None
+    document_type: str | None = None
+    title: str | None = None
+    url: str | None = None
+    course_slug: str | None = None
+    course_name: str | None = None
+    course_codes: list[str] = Field(default_factory=list)
+    published_at: datetime | None = None
 
 
 class QueryResponse(BaseModel):
     answer: str
     chunks: list[RetrievedChunk]
+
+
+class CourseListResponse(BaseModel):
+    courses: list[CourseCatalogEntry] = Field(default_factory=list)
+
+
+class CourseDocumentSummary(BaseModel):
+    document_id: str
+    source_document_id: str
+    source: str
+    document_type: str
+    title: str
+    url: str
+    course_slug: str | None = None
+    course_name: str | None = None
+    course_codes: list[str] = Field(default_factory=list)
+    published_at: datetime | None = None
+    chunk_count: int
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CourseDocumentsResponse(BaseModel):
+    course_slug: str
+    documents: list[CourseDocumentSummary] = Field(default_factory=list)
 
 
 class DocumentIngestedEvent(BaseModel):

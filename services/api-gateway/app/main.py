@@ -2,6 +2,9 @@ import httpx
 from fastapi import FastAPI, HTTPException
 
 from shared.schemas.models import (
+    CourseCatalogEntry,
+    CourseDocumentsResponse,
+    CourseListResponse,
     OMSCentralScrapeRequest,
     OMSCentralScrapeResponse,
     QueryRequest,
@@ -11,7 +14,7 @@ from shared.schemas.models import (
 )
 from shared.utils.config import get_settings
 from shared.utils.observability import instrument_fastapi_app
-from shared.utils.service_client import post_json
+from shared.utils.service_client import get_json, post_json
 
 app = FastAPI(title="OMSCS Course Intelligence API Gateway", version="0.2.0")
 instrument_fastapi_app(app, "api-gateway")
@@ -51,6 +54,46 @@ async def scrape_reddit(request: RedditScrapeRequest) -> RedditScrapeResponse:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return RedditScrapeResponse.model_validate(payload)
+
+
+@app.get("/courses", response_model=CourseListResponse)
+async def list_courses() -> CourseListResponse:
+    try:
+        payload = await get_json(f"{settings.retrieval_service_url}/courses")
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return CourseListResponse.model_validate(payload)
+
+
+@app.get("/courses/{slug}", response_model=CourseCatalogEntry)
+async def get_course(slug: str) -> CourseCatalogEntry:
+    try:
+        payload = await get_json(f"{settings.retrieval_service_url}/courses/{slug}")
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            raise HTTPException(status_code=404, detail=exc.response.json().get("detail")) from exc
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return CourseCatalogEntry.model_validate(payload)
+
+
+@app.get("/courses/{slug}/documents", response_model=CourseDocumentsResponse)
+async def list_course_documents(slug: str) -> CourseDocumentsResponse:
+    try:
+        payload = await get_json(
+            f"{settings.retrieval_service_url}/courses/{slug}/documents"
+        )
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            raise HTTPException(status_code=404, detail=exc.response.json().get("detail")) from exc
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return CourseDocumentsResponse.model_validate(payload)
 
 
 @app.post("/query", response_model=QueryResponse)

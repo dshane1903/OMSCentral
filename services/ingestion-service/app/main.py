@@ -19,7 +19,11 @@ from shared.schemas.models import (
 from shared.utils.config import get_settings
 from shared.utils.db import db_connection, ensure_schema
 from shared.utils.messaging import publish_document_ingested
-from shared.utils.observability import instrument_fastapi_app
+from shared.utils.observability import (
+    DOCUMENTS_PERSISTED,
+    SCRAPE_RUNS,
+    instrument_fastapi_app,
+)
 
 app = FastAPI(title="OMSCS Ingestion Service", version="0.2.0")
 instrument_fastapi_app(app, "ingestion-service")
@@ -234,7 +238,11 @@ async def scrape_omscentral(
             if request.persist:
                 upsert_course(course)
                 if request.include_reviews:
-                    persisted_document_count += upsert_reviews(reviews)
+                    persisted_reviews = upsert_reviews(reviews)
+                    persisted_document_count += persisted_reviews
+                    DOCUMENTS_PERSISTED.labels(source="omscentral").inc(
+                        persisted_reviews
+                    )
                     # Publish events only after the DB write committed.
                     # If the broker is down the reconciliation poller in the
                     # processing service will still pick these documents up.
@@ -242,6 +250,7 @@ async def scrape_omscentral(
                         await publish_document_ingested(review.document_id)
                 write_snapshot(course, reviews)
 
+        SCRAPE_RUNS.labels(source="omscentral", status="success").inc()
         return OMSCentralScrapeResponse(
             catalog_count=len(catalog),
             scraped_course_count=len(scraped_courses),
@@ -251,8 +260,10 @@ async def scrape_omscentral(
             reviews=scraped_reviews,
         )
     except HTTPException:
+        SCRAPE_RUNS.labels(source="omscentral", status="failure").inc()
         raise
     except Exception as exc:
+        SCRAPE_RUNS.labels(source="omscentral", status="failure").inc()
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     finally:
         await client.aclose()
@@ -381,12 +392,14 @@ async def scrape_reddit(request: RedditScrapeRequest) -> RedditScrapeResponse:
         persisted_count = 0
         if request.persist:
             persisted_count = upsert_reddit_documents(all_docs)
+            DOCUMENTS_PERSISTED.labels(source="reddit").inc(persisted_count)
             # Publish events for the processing pipeline
             for doc in all_docs:
                 await publish_document_ingested(doc.document_id)
 
         courses_matched = sum(1 for doc in all_docs if doc.course_id is not None)
 
+        SCRAPE_RUNS.labels(source="reddit", status="success").inc()
         return RedditScrapeResponse(
             documents_scraped=len(all_docs),
             documents_persisted=persisted_count,
@@ -394,8 +407,10 @@ async def scrape_reddit(request: RedditScrapeRequest) -> RedditScrapeResponse:
             documents=all_docs,
         )
     except HTTPException:
+        SCRAPE_RUNS.labels(source="reddit", status="failure").inc()
         raise
     except Exception as exc:
+        SCRAPE_RUNS.labels(source="reddit", status="failure").inc()
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     finally:
         await omscentral_client.aclose()
