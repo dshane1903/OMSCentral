@@ -3,8 +3,6 @@ name: CI
 on:
   pull_request:
   push:
-    branches:
-      - main
 
 jobs:
   python-tests:
@@ -35,7 +33,7 @@ jobs:
         run: |
           python -m compileall -q shared services
 
-      - name: Run parser and messaging tests
+      - name: Run Python unit and integration tests
         env:
           PYTHONDONTWRITEBYTECODE: "1"
           PYTHONPATH: .
@@ -46,6 +44,14 @@ jobs:
             python -m unittest services.ingestion-service.tests.test_reddit
           PYTHONPATH=. \
             python -m unittest services.processing-service.tests.test_messaging
+          PYTHONPATH=. \
+            python -m unittest services.processing-service.tests.test_semantic_chunking
+          PYTHONPATH=services/api-gateway:. \
+            python -m unittest services.api-gateway.tests.test_api_gateway_integration
+          PYTHONPATH=services/retrieval-service:. \
+            python -m unittest services.retrieval-service.tests.test_retrieval_integration
+          PYTHONPATH=services/llm-service:. \
+            python -m unittest services.llm-service.tests.test_llm_service_integration
 
       - name: Validate Docker Compose config
         run: docker compose -f infra/docker-compose.yml config
