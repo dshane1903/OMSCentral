@@ -123,6 +123,8 @@ class IndexJobStatus(BaseModel):
 class ProcessDocumentsRequest(BaseModel):
     limit: int = Field(default=50, ge=1, le=500)
     max_batches: int = Field(default=1, ge=1, le=1000)
+    reprocess: bool = False
+    course_slugs: list[str] = Field(default_factory=list)
 
 
 class RedditDocument(BaseModel):

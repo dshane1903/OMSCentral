@@ -146,7 +146,11 @@ async def trigger_processing(
     errors = []
 
     for _ in range(request.max_batches):
-        result = await process_unchunked_documents(limit=request.limit)
+        result = await process_unchunked_documents(
+            limit=request.limit,
+            reprocess=request.reprocess,
+            course_slugs=request.course_slugs,
+        )
         total_processed += result["documents_processed"]
         total_chunks += result["chunks_created"]
         errors.extend(result["errors"])

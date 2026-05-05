@@ -100,7 +100,9 @@ def system_prompt() -> str:
     return (
         "You answer questions using only the provided context. "
         "If the answer is not supported by the context, say so clearly. "
-        "Use concise Markdown formatting when it improves readability."
+        "Use concise Markdown formatting when it improves readability. "
+        "Prefer short sections and bullets for comparisons; avoid Markdown tables "
+        "unless the user explicitly asks for a table."
     )
 
 

@@ -14,17 +14,23 @@ from shared.utils.observability import (
     PROCESSING_DOCUMENTS,
 )
 from shared.utils.service_client import post_json
-from shared.utils.text import chunk_text, normalize_text
+from shared.utils.text import semantic_chunk_text, split_sentences, normalize_text
 
 logger = logging.getLogger("processing-service")
 
 CHUNK_SIZE = 800
-CHUNK_OVERLAP = 100
+MIN_CHUNK_SIZE = 300
+FALLBACK_CHUNK_OVERLAP = 80
 EMBEDDING_BATCH_SIZE = 32
 
 
-def fetch_unchunked_documents(limit: int = 50) -> list[dict[str, Any]]:
-    """Find documents that haven't been chunked yet."""
+def fetch_documents_for_processing(
+    limit: int = 50,
+    reprocess: bool = False,
+    course_slugs: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Find documents to chunk, optionally including already chunked docs."""
+    course_slugs = course_slugs or []
     with db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -40,12 +46,13 @@ def fetch_unchunked_documents(limit: int = 50) -> list[dict[str, Any]]:
                     content,
                     metadata
                 FROM documents
-                WHERE chunk_count = 0
+                WHERE (%s OR chunk_count = 0)
                   AND content != ''
+                  AND (COALESCE(array_length(%s::text[], 1), 0) = 0 OR course_slug = ANY(%s::text[]))
                 ORDER BY created_at ASC
                 LIMIT %s
                 """,
-                (limit,),
+                (reprocess, course_slugs, course_slugs, limit),
             )
             return list(cur.fetchall())
 
@@ -118,13 +125,21 @@ def build_chunk_text(doc: dict[str, Any], raw_chunk: str) -> str:
     return raw_chunk
 
 
-def chunk_document(doc: dict[str, Any]) -> list[str]:
-    """Split a document into retrieval-ready chunks with context headers."""
+async def chunk_document(doc: dict[str, Any]) -> list[str]:
+    """Split a document into semantic retrieval chunks with context headers."""
     content = normalize_text(doc.get("content") or "")
     if not content:
         return []
 
-    raw_chunks = chunk_text(content, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP)
+    sentences = split_sentences(content)
+    sentence_vectors = await embed_chunks(sentences) if len(sentences) > 1 else None
+    raw_chunks = semantic_chunk_text(
+        content,
+        sentence_vectors=sentence_vectors,
+        max_chunk_size=CHUNK_SIZE,
+        min_chunk_size=MIN_CHUNK_SIZE,
+        fallback_overlap=FALLBACK_CHUNK_OVERLAP,
+    )
     return [build_chunk_text(doc, chunk) for chunk in raw_chunks]
 
 
@@ -188,9 +203,17 @@ def write_chunks(
     return len(chunks)
 
 
-async def process_unchunked_documents(limit: int = 50) -> dict[str, Any]:
-    """Main processing loop: find unchunked docs, chunk, embed, store."""
-    documents = fetch_unchunked_documents(limit=limit)
+async def process_unchunked_documents(
+    limit: int = 50,
+    reprocess: bool = False,
+    course_slugs: list[str] | None = None,
+) -> dict[str, Any]:
+    """Main processing loop: find docs, chunk, embed, store."""
+    documents = fetch_documents_for_processing(
+        limit=limit,
+        reprocess=reprocess,
+        course_slugs=course_slugs,
+    )
 
     if not documents:
         return {
@@ -224,7 +247,7 @@ async def process_unchunked_documents(limit: int = 50) -> dict[str, Any]:
 async def _chunk_and_embed(doc: dict[str, Any]) -> int:
     """Chunk one document, embed it, and write the chunks. Returns chunk count."""
     doc_id = doc["id"]
-    chunks = chunk_document(doc)
+    chunks = await chunk_document(doc)
     if not chunks:
         # Mark as processed even if no chunks (empty content) so we don't
         # re-scan it forever on the next poll.

@@ -11,6 +11,7 @@ from shared.schemas.models import (
     IndexJobStatus,
     OMSCentralScrapeRequest,
     OMSCentralScrapeResponse,
+    ProcessDocumentsRequest,
     QueryRequest,
     QueryResponse,
     RedditScrapeRequest,
@@ -155,12 +156,14 @@ async def query_documents(request: QueryRequest) -> QueryResponse:
 
 
 @app.post("/process")
-async def trigger_processing() -> dict:
+async def trigger_processing(
+    request: ProcessDocumentsRequest = ProcessDocumentsRequest(),
+) -> dict:
     """Trigger the processing worker to chunk and embed unchunked documents."""
     try:
         payload = await post_json(
             f"{settings.processing_service_url}/process",
-            {},
+            request.model_dump(),
         )
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

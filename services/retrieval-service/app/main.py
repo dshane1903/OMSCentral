@@ -165,7 +165,7 @@ async def retrieve_context(request: QueryRequest) -> QueryResponse:
         if course_scopes
         else "any"
     )
-    cache_key = f"query:v4:hybrid_rrf:{scope_slug}:{scope_chunks}:{request.question}:{request.top_k}"
+    cache_key = f"query:v5:hybrid_rrf:{scope_slug}:{scope_chunks}:{request.question}:{request.top_k}"
     cached = get_cached_json(cache_key)
     if cached:
         RETRIEVAL_CACHE_EVENTS.labels(result="hit").inc()
@@ -289,6 +289,14 @@ def _fetch_dense_candidates(
     limit: int,
     course_slugs: list[str] | None = None,
 ) -> list[dict[str, Any]]:
+    if course_slugs:
+        # pgvector ivfflat can return zero rows for selective metadata filters
+        # because the filter is applied after approximate candidate selection.
+        # Course-scoped queries are small enough for an exact scan, and exact
+        # filtering is much safer for compare/course-specific retrieval.
+        cursor.execute("SET LOCAL enable_indexscan = off")
+        cursor.execute("SET LOCAL enable_bitmapscan = off")
+
     cursor.execute(
         """
         SELECT
@@ -312,7 +320,13 @@ def _fetch_dense_candidates(
         """,
         (vector, course_slugs, course_slugs, vector, limit),
     )
-    return list(cursor.fetchall())
+    rows = list(cursor.fetchall())
+
+    if course_slugs:
+        cursor.execute("SET LOCAL enable_indexscan = on")
+        cursor.execute("SET LOCAL enable_bitmapscan = on")
+
+    return rows
 
 
 def _interleave_ranked_batches(
