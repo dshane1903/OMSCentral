@@ -7,6 +7,12 @@ from typing import Any
 
 from shared.utils.config import get_settings
 from shared.utils.db import db_connection, serialize_vector
+from shared.utils.observability import (
+    EMBEDDING_BATCHES,
+    EMBEDDING_TEXTS,
+    PROCESSING_CHUNKS_CREATED,
+    PROCESSING_DOCUMENTS,
+)
 from shared.utils.service_client import post_json
 from shared.utils.text import chunk_text, normalize_text
 
@@ -129,10 +135,25 @@ async def embed_chunks(chunks: list[str]) -> list[list[float]]:
 
     for i in range(0, len(chunks), EMBEDDING_BATCH_SIZE):
         batch = chunks[i : i + EMBEDDING_BATCH_SIZE]
-        response = await post_json(
-            f"{settings.embedding_service_url}/embed",
-            {"texts": batch},
-        )
+        try:
+            response = await post_json(
+                f"{settings.embedding_service_url}/embed",
+                {"texts": batch},
+            )
+        except Exception:
+            EMBEDDING_BATCHES.labels(
+                service="processing-service", status="failure"
+            ).inc()
+            EMBEDDING_TEXTS.labels(
+                service="processing-service", status="failure"
+            ).inc(len(batch))
+            raise
+        EMBEDDING_BATCHES.labels(
+            service="processing-service", status="success"
+        ).inc()
+        EMBEDDING_TEXTS.labels(
+            service="processing-service", status="success"
+        ).inc(len(batch))
         all_vectors.extend(response["vectors"])
 
     return all_vectors
@@ -186,9 +207,12 @@ async def process_unchunked_documents(limit: int = 50) -> dict[str, Any]:
         try:
             written = await _chunk_and_embed(doc)
             total_chunks += written
+            PROCESSING_DOCUMENTS.labels(status="success").inc()
+            PROCESSING_CHUNKS_CREATED.inc(written)
         except Exception as exc:
             logger.error("Failed to process document %s: %s", doc_id, exc)
             errors.append({"document_id": doc_id, "error": str(exc)})
+            PROCESSING_DOCUMENTS.labels(status="failure").inc()
 
     return {
         "documents_processed": len(documents) - len(errors),
@@ -246,8 +270,11 @@ async def process_one_document(document_id: str) -> bool:
         return True
 
     try:
-        await _chunk_and_embed(doc)
+        written = await _chunk_and_embed(doc)
+        PROCESSING_DOCUMENTS.labels(status="success").inc()
+        PROCESSING_CHUNKS_CREATED.inc(written)
         return True
     except Exception as exc:
         logger.error("Processing failed for %s: %s", document_id, exc)
+        PROCESSING_DOCUMENTS.labels(status="failure").inc()
         return False

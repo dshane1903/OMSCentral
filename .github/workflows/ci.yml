@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install service dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            -r services/ingestion-service/requirements.txt \
+            -r services/processing-service/requirements.txt \
+            -r services/api-gateway/requirements.txt \
+            -r services/embedding-service/requirements.txt \
+            -r services/retrieval-service/requirements.txt \
+            -r services/llm-service/requirements.txt
+
+      - name: Compile Python modules
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python -m compileall -q shared services
+
+      - name: Run parser and messaging tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          PYTHONPATH: .
+        run: |
+          PYTHONPATH=services/ingestion-service:. \
+            python -m unittest services.ingestion-service.tests.test_omscentral
+          PYTHONPATH=services/ingestion-service:. \
+            python -m unittest services.ingestion-service.tests.test_reddit
+          PYTHONPATH=. \
+            python -m unittest services.processing-service.tests.test_messaging
+
+      - name: Validate Docker Compose config
+        run: docker compose -f infra/docker-compose.yml config
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build

@@ -87,6 +87,44 @@ class OMSCentralScrapeResponse(BaseModel):
     reviews: list[CourseReview] = Field(default_factory=list)
 
 
+class IndexCoursesRequest(BaseModel):
+    course_slugs: list[str] = Field(default_factory=list)
+    missing_only: bool = True
+    include_reviews: bool = True
+    process_after: bool = True
+    limit: int | None = Field(default=None, ge=1, le=500)
+
+
+class IndexCoursesResponse(BaseModel):
+    job_id: str
+    status: str
+    message: str
+
+
+class IndexJobStatus(BaseModel):
+    job_id: str
+    status: str
+    requested_course_slugs: list[str] = Field(default_factory=list)
+    missing_only: bool = True
+    include_reviews: bool = True
+    process_after: bool = True
+    limit: int | None = None
+    total_courses: int = 0
+    courses_indexed: int = 0
+    documents_persisted: int = 0
+    processing_documents_processed: int = 0
+    processing_chunks_created: int = 0
+    errors: list[dict[str, str]] = Field(default_factory=list)
+    created_at: datetime | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class ProcessDocumentsRequest(BaseModel):
+    limit: int = Field(default=50, ge=1, le=500)
+    max_batches: int = Field(default=1, ge=1, le=1000)
+
+
 class RedditDocument(BaseModel):
     document_id: str
     source_document_id: str
@@ -138,11 +176,48 @@ class RetrievedChunk(BaseModel):
     chunk_index: int
     score: float
     text: str
+    dense_score: float | None = None
+    sparse_score: float | None = None
+    dense_rank: int | None = None
+    sparse_rank: int | None = None
+    retrieval_method: str = "hybrid_rrf"
+    source: str | None = None
+    document_type: str | None = None
+    title: str | None = None
+    url: str | None = None
+    course_slug: str | None = None
+    course_name: str | None = None
+    course_codes: list[str] = Field(default_factory=list)
+    published_at: datetime | None = None
 
 
 class QueryResponse(BaseModel):
     answer: str
     chunks: list[RetrievedChunk]
+
+
+class CourseListResponse(BaseModel):
+    courses: list[CourseCatalogEntry] = Field(default_factory=list)
+
+
+class CourseDocumentSummary(BaseModel):
+    document_id: str
+    source_document_id: str
+    source: str
+    document_type: str
+    title: str
+    url: str
+    course_slug: str | None = None
+    course_name: str | None = None
+    course_codes: list[str] = Field(default_factory=list)
+    published_at: datetime | None = None
+    chunk_count: int
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CourseDocumentsResponse(BaseModel):
+    course_slug: str
+    documents: list[CourseDocumentSummary] = Field(default_factory=list)
 
 
 class DocumentIngestedEvent(BaseModel):

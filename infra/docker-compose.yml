@@ -93,12 +93,16 @@ services:
 
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
+    command: >
+      sh -c "rabbitmq-plugins enable --offline rabbitmq_prometheus &&
+      rabbitmq-server"
     environment:
       RABBITMQ_DEFAULT_USER: rag
       RABBITMQ_DEFAULT_PASS: rag
     ports:
       - "5672:5672"
       - "15672:15672"
+      - "15692:15692"
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s
@@ -107,7 +111,44 @@ services:
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
 
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    ports:
+      - "9090:9090"
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - api-gateway
+      - ingestion-service
+      - embedding-service
+      - retrieval-service
+      - llm-service
+      - processing-service
+      - rabbitmq
+
+  grafana:
+    image: grafana/grafana:11.2.2
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
 volumes:
   documents:
   postgres_data:
   rabbitmq_data:
+  prometheus_data:
+  grafana_data:

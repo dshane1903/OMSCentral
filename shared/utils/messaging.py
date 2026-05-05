@@ -11,6 +11,7 @@ from aio_pika import DeliveryMode, ExchangeType, Message
 from aio_pika.abc import AbstractIncomingMessage, AbstractRobustConnection
 
 from shared.utils.config import get_settings
+from shared.utils.observability import DOCUMENT_EVENTS_PUBLISHED
 
 logger = logging.getLogger("messaging")
 
@@ -172,8 +173,16 @@ async def publish_document_ingested(document_id: str) -> None:
                 message,
                 routing_key=DOCUMENT_INGESTED_ROUTING_KEY,
             )
+        DOCUMENT_EVENTS_PUBLISHED.labels(
+            source=_source_from_document_id(document_id),
+            status="success",
+        ).inc()
         logger.debug("Published document.ingested for %s", document_id)
     except Exception:
+        DOCUMENT_EVENTS_PUBLISHED.labels(
+            source=_source_from_document_id(document_id),
+            status="failure",
+        ).inc()
         logger.exception("Failed to publish document.ingested for %s", document_id)
 
 
@@ -285,3 +294,11 @@ async def _dispatch(
     else:
         # Reject without requeue so it flows through the DLX into the retry queue.
         await message.nack(requeue=False)
+
+
+def _source_from_document_id(document_id: str) -> str:
+    if document_id.startswith("omscentral-"):
+        return "omscentral"
+    if document_id.startswith("reddit-"):
+        return "reddit"
+    return "unknown"

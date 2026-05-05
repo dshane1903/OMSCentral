@@ -24,9 +24,13 @@ class Settings(BaseSettings):
     omscentral_user_agent: str = "omscs-course-intel/0.1"
     reddit_request_timeout_seconds: float = 30.0
     reddit_user_agent: str = "omscs-course-intel/0.1 (by /u/omscs-course-intel)"
+    llm_provider: str = "openai"
     openai_api_key: str = "replace-me"
     openai_embedding_model: str = "text-embedding-3-small"
     openai_chat_model: str = "gpt-4.1-mini"
+    anthropic_api_key: str = "replace-me"
+    anthropic_chat_model: str = "claude-3-5-sonnet-latest"
+    anthropic_api_version: str = "2023-06-01"
     embedding_dimensions: int = 1536
     api_gateway_url: str = "http://api-gateway:8000"
     ingestion_service_url: str = "http://ingestion-service:8001"
@@ -41,6 +45,8 @@ class Settings(BaseSettings):
     retrieval_service_port: int = 8003
     llm_service_port: int = 8004
     processing_service_port: int = 8005
+    frontend_cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    frontend_cors_origin_regex: str = r"http://(localhost|127\.0\.0\.1):[0-9]+"
 
     model_config = SettingsConfigDict(
         env_file=".env",
