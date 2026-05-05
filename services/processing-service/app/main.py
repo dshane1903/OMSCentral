@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import FastAPI
 
 from app.worker import process_one_document, process_unchunked_documents
-from shared.schemas.models import DocumentIngestedEvent
+from shared.schemas.models import DocumentIngestedEvent, ProcessDocumentsRequest
 from shared.utils.config import get_settings
 from shared.utils.messaging import consume_documents
 from shared.utils.observability import instrument_fastapi_app
@@ -137,9 +137,27 @@ def healthcheck() -> dict[str, str]:
 
 
 @app.post("/process")
-async def trigger_processing() -> dict:
+async def trigger_processing(
+    request: ProcessDocumentsRequest = ProcessDocumentsRequest(),
+) -> dict:
     """Manual trigger: scan the DB for unchunked docs and process them now."""
-    return await process_unchunked_documents()
+    total_processed = 0
+    total_chunks = 0
+    errors = []
+
+    for _ in range(request.max_batches):
+        result = await process_unchunked_documents(limit=request.limit)
+        total_processed += result["documents_processed"]
+        total_chunks += result["chunks_created"]
+        errors.extend(result["errors"])
+        if result["documents_processed"] == 0:
+            break
+
+    return {
+        "documents_processed": total_processed,
+        "chunks_created": total_chunks,
+        "errors": errors,
+    }
 
 
 @app.post("/process/{document_id}")

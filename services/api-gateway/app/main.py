@@ -6,6 +6,9 @@ from shared.schemas.models import (
     CourseCatalogEntry,
     CourseDocumentsResponse,
     CourseListResponse,
+    IndexCoursesRequest,
+    IndexCoursesResponse,
+    IndexJobStatus,
     OMSCentralScrapeRequest,
     OMSCentralScrapeResponse,
     QueryRequest,
@@ -67,6 +70,35 @@ async def scrape_reddit(request: RedditScrapeRequest) -> RedditScrapeResponse:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return RedditScrapeResponse.model_validate(payload)
+
+
+@app.post("/index/courses", response_model=IndexCoursesResponse)
+async def index_courses(request: IndexCoursesRequest) -> IndexCoursesResponse:
+    try:
+        payload = await post_json(
+            f"{settings.ingestion_service_url}/index/courses",
+            request.model_dump(),
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return IndexCoursesResponse.model_validate(payload)
+
+
+@app.get("/index/jobs/{job_id}", response_model=IndexJobStatus)
+async def get_index_job(job_id: str) -> IndexJobStatus:
+    try:
+        payload = await get_json(
+            f"{settings.ingestion_service_url}/index/jobs/{job_id}"
+        )
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            raise HTTPException(status_code=404, detail=exc.response.json().get("detail")) from exc
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return IndexJobStatus.model_validate(payload)
 
 
 @app.get("/courses", response_model=CourseListResponse)

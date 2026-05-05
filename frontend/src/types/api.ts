@@ -38,3 +38,23 @@ export type QueryResponse = {
 export type CourseListResponse = {
   courses: Course[];
 };
+
+export type CourseDocument = {
+  document_id: string;
+  source_document_id: string;
+  source: string;
+  document_type: string;
+  title: string;
+  url: string;
+  course_slug: string | null;
+  course_name: string | null;
+  course_codes: string[];
+  published_at: string | null;
+  chunk_count: number;
+  metadata: Record<string, unknown>;
+};
+
+export type CourseDocumentsResponse = {
+  course_slug: string;
+  documents: CourseDocument[];
+};

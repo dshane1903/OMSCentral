@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 import json
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
-from fastapi import FastAPI, HTTPException
+import httpx
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 
 from app.scrapers.omscentral import OMSCentralClient
 from app.scrapers.reddit import RedditClient
 from shared.schemas.models import (
     CourseCatalogEntry,
     CourseReview,
+    IndexCoursesRequest,
+    IndexCoursesResponse,
+    IndexJobStatus,
     OMSCentralScrapeRequest,
     OMSCentralScrapeResponse,
     RedditDocument,
@@ -24,6 +31,7 @@ from shared.utils.observability import (
     SCRAPE_RUNS,
     instrument_fastapi_app,
 )
+from shared.utils.service_client import post_json
 
 app = FastAPI(title="OMSCS Ingestion Service", version="0.2.0")
 instrument_fastapi_app(app, "ingestion-service")
@@ -54,7 +62,7 @@ def write_snapshot(course: CourseCatalogEntry, reviews: list[CourseReview]) -> N
     )
 
 
-def upsert_course(course: CourseCatalogEntry) -> None:
+def upsert_course(course: CourseCatalogEntry) -> str:
     with db_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -91,9 +99,8 @@ def upsert_course(course: CourseCatalogEntry) -> None:
                     %(syllabus_url)s,
                     %(metadata)s::jsonb
                 )
-                ON CONFLICT (course_id) DO UPDATE SET
+                ON CONFLICT (slug) DO UPDATE SET
                     source = EXCLUDED.source,
-                    slug = EXCLUDED.slug,
                     name = EXCLUDED.name,
                     codes = EXCLUDED.codes,
                     credit_hours = EXCLUDED.credit_hours,
@@ -106,13 +113,23 @@ def upsert_course(course: CourseCatalogEntry) -> None:
                     syllabus_url = EXCLUDED.syllabus_url,
                     metadata = EXCLUDED.metadata,
                     updated_at = NOW()
+                RETURNING course_id
                 """,
                 {
                     **course.model_dump(),
                     "metadata": json.dumps(course.metadata),
                 },
             )
+            row = cursor.fetchone()
         connection.commit()
+    return row["course_id"]
+
+
+def apply_course_id_to_reviews(
+    reviews: list[CourseReview],
+    course_id: str,
+) -> list[CourseReview]:
+    return [review.model_copy(update={"course_id": course_id}) for review in reviews]
 
 
 def upsert_reviews(reviews: list[CourseReview]) -> int:
@@ -169,6 +186,11 @@ def upsert_reviews(reviews: list[CourseReview]) -> int:
                         content = EXCLUDED.content,
                         content_hash = EXCLUDED.content_hash,
                         metadata = EXCLUDED.metadata,
+                        chunk_count = CASE
+                            WHEN documents.content_hash IS DISTINCT FROM EXCLUDED.content_hash
+                            THEN 0
+                            ELSE documents.chunk_count
+                        END,
                         updated_at = NOW()
                     """,
                     {
@@ -199,6 +221,265 @@ def upsert_reviews(reviews: list[CourseReview]) -> int:
         connection.commit()
 
     return len(reviews)
+
+
+def create_index_job(request: IndexCoursesRequest) -> str:
+    job_id = str(uuid.uuid4())
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO index_jobs (
+                    id,
+                    status,
+                    requested_course_slugs,
+                    missing_only,
+                    include_reviews,
+                    process_after,
+                    limit_count
+                )
+                VALUES (%s, 'queued', %s, %s, %s, %s, %s)
+                """,
+                (
+                    job_id,
+                    request.course_slugs,
+                    request.missing_only,
+                    request.include_reviews,
+                    request.process_after,
+                    request.limit,
+                ),
+            )
+        connection.commit()
+    return job_id
+
+
+def get_index_job(job_id: str) -> IndexJobStatus | None:
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    status,
+                    requested_course_slugs,
+                    missing_only,
+                    include_reviews,
+                    process_after,
+                    limit_count,
+                    total_courses,
+                    courses_indexed,
+                    documents_persisted,
+                    processing_documents_processed,
+                    processing_chunks_created,
+                    errors,
+                    created_at,
+                    started_at,
+                    finished_at
+                FROM index_jobs
+                WHERE id = %s
+                """,
+                (job_id,),
+            )
+            row = cursor.fetchone()
+
+    if row is None:
+        return None
+
+    return _index_job_from_row(row)
+
+
+def update_index_job(job_id: str, **fields: Any) -> None:
+    if not fields:
+        return
+
+    assignments = [
+        f"{field} = %s::jsonb" if field == "errors" else f"{field} = %s"
+        for field in fields
+    ]
+    values = [
+        json.dumps(value) if field == "errors" else value
+        for field, value in fields.items()
+    ]
+    assignments.append("updated_at = NOW()")
+
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE index_jobs
+                SET {", ".join(assignments)}
+                WHERE id = %s
+                """,
+                (*values, job_id),
+            )
+        connection.commit()
+
+
+def get_indexed_course_slugs() -> set[str]:
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT DISTINCT documents.course_slug
+                FROM documents
+                JOIN chunks ON chunks.document_id = documents.id
+                WHERE documents.course_slug IS NOT NULL
+                    AND documents.course_slug != ''
+                """
+            )
+            return {row["course_slug"] for row in cursor.fetchall()}
+
+
+def _index_job_from_row(row: dict[str, Any]) -> IndexJobStatus:
+    return IndexJobStatus(
+        job_id=row["id"],
+        status=row["status"],
+        requested_course_slugs=row["requested_course_slugs"] or [],
+        missing_only=row["missing_only"],
+        include_reviews=row["include_reviews"],
+        process_after=row["process_after"],
+        limit=row["limit_count"],
+        total_courses=row["total_courses"],
+        courses_indexed=row["courses_indexed"],
+        documents_persisted=row["documents_persisted"],
+        processing_documents_processed=row["processing_documents_processed"],
+        processing_chunks_created=row["processing_chunks_created"],
+        errors=row["errors"] or [],
+        created_at=row["created_at"],
+        started_at=row["started_at"],
+        finished_at=row["finished_at"],
+    )
+
+
+@app.post("/index/courses", response_model=IndexCoursesResponse)
+async def start_course_index(
+    request: IndexCoursesRequest,
+    background_tasks: BackgroundTasks,
+) -> IndexCoursesResponse:
+    job_id = create_index_job(request)
+    background_tasks.add_task(run_course_index_job, job_id, request)
+    return IndexCoursesResponse(
+        job_id=job_id,
+        status="queued",
+        message="Course indexing job queued.",
+    )
+
+
+@app.get("/index/jobs/{job_id}", response_model=IndexJobStatus)
+async def get_course_index_job(job_id: str) -> IndexJobStatus:
+    job = get_index_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Unknown index job: {job_id}")
+    return job
+
+
+async def run_course_index_job(job_id: str, request: IndexCoursesRequest) -> None:
+    errors: list[dict[str, str]] = []
+    documents_persisted = 0
+    client = OMSCentralClient(settings)
+
+    update_index_job(
+        job_id,
+        status="running",
+        started_at=datetime.now(timezone.utc),
+    )
+    try:
+        catalog = await client.fetch_catalog()
+        catalog_by_slug = {course.slug: course for course in catalog}
+
+        if request.course_slugs:
+            missing = sorted(
+                slug for slug in request.course_slugs if slug not in catalog_by_slug
+            )
+            if missing:
+                raise ValueError(f"Unknown course slugs: {', '.join(missing)}")
+            selected_courses = [catalog_by_slug[slug] for slug in request.course_slugs]
+        else:
+            selected_courses = catalog
+
+        if request.missing_only:
+            indexed_slugs = get_indexed_course_slugs()
+            selected_courses = [
+                course for course in selected_courses if course.slug not in indexed_slugs
+            ]
+
+        if request.limit is not None:
+            selected_courses = selected_courses[: request.limit]
+
+        update_index_job(job_id, total_courses=len(selected_courses))
+
+        for index, catalog_entry in enumerate(selected_courses, start=1):
+            try:
+                course, reviews = await client.fetch_course_reviews(catalog_entry)
+                course_id = upsert_course(course)
+                if request.include_reviews:
+                    reviews = apply_course_id_to_reviews(reviews, course_id)
+                    persisted_reviews = upsert_reviews(reviews)
+                    documents_persisted += persisted_reviews
+                    DOCUMENTS_PERSISTED.labels(source="omscentral").inc(
+                        persisted_reviews
+                    )
+                    for review in reviews:
+                        await publish_document_ingested(review.document_id)
+                write_snapshot(course, reviews)
+            except Exception as exc:
+                errors.append(
+                    {
+                        "course_slug": catalog_entry.slug,
+                        "error": str(exc),
+                    }
+                )
+
+            update_index_job(
+                job_id,
+                courses_indexed=index,
+                documents_persisted=documents_persisted,
+                errors=errors,
+            )
+
+        if request.process_after:
+            processing_result = await _process_indexed_documents()
+            errors.extend(processing_result["errors"])
+            update_index_job(
+                job_id,
+                processing_documents_processed=processing_result[
+                    "documents_processed"
+                ],
+                processing_chunks_created=processing_result["chunks_created"],
+                errors=errors,
+            )
+
+        update_index_job(
+            job_id,
+            status="completed_with_errors" if errors else "completed",
+            finished_at=datetime.now(timezone.utc),
+            errors=errors,
+        )
+    except Exception as exc:
+        errors.append({"course_slug": "", "error": str(exc)})
+        update_index_job(
+            job_id,
+            status="failed",
+            finished_at=datetime.now(timezone.utc),
+            errors=errors,
+        )
+    finally:
+        await client.aclose()
+
+
+async def _process_indexed_documents() -> dict[str, Any]:
+    try:
+        return await post_json(
+            f"{settings.processing_service_url}/process",
+            {"limit": 50, "max_batches": 1000},
+            timeout=3600.0,
+        )
+    except httpx.HTTPError as exc:
+        return {
+            "documents_processed": 0,
+            "chunks_created": 0,
+            "errors": [{"document_id": "", "error": str(exc)}],
+        }
 
 
 @app.post("/sources/omscentral/scrape", response_model=OMSCentralScrapeResponse)
@@ -236,8 +517,9 @@ async def scrape_omscentral(
             if request.include_reviews:
                 scraped_reviews.extend(reviews)
             if request.persist:
-                upsert_course(course)
+                course_id = upsert_course(course)
                 if request.include_reviews:
+                    reviews = apply_course_id_to_reviews(reviews, course_id)
                     persisted_reviews = upsert_reviews(reviews)
                     persisted_document_count += persisted_reviews
                     DOCUMENTS_PERSISTED.labels(source="omscentral").inc(

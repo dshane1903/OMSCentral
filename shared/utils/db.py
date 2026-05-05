@@ -60,12 +60,35 @@ CREATE TABLE IF NOT EXISTS chunks (
     UNIQUE (document_id, chunk_index)
 );
 
+CREATE TABLE IF NOT EXISTS index_jobs (
+    id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    requested_course_slugs TEXT[] NOT NULL DEFAULT '{{}}'::text[],
+    missing_only BOOLEAN NOT NULL DEFAULT TRUE,
+    include_reviews BOOLEAN NOT NULL DEFAULT TRUE,
+    process_after BOOLEAN NOT NULL DEFAULT TRUE,
+    limit_count INTEGER,
+    total_courses INTEGER NOT NULL DEFAULT 0,
+    courses_indexed INTEGER NOT NULL DEFAULT 0,
+    documents_persisted INTEGER NOT NULL DEFAULT 0,
+    processing_documents_processed INTEGER NOT NULL DEFAULT 0,
+    processing_chunks_created INTEGER NOT NULL DEFAULT 0,
+    errors JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_course_catalog_source_slug ON course_catalog (source, slug);
 CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks (document_id);
 CREATE INDEX IF NOT EXISTS idx_documents_course_slug ON documents (course_slug);
 CREATE INDEX IF NOT EXISTS idx_documents_source_document ON documents (source, source_document_id);
+CREATE INDEX IF NOT EXISTS idx_index_jobs_status ON index_jobs (status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding_ivfflat
 ON chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+CREATE INDEX IF NOT EXISTS idx_chunks_text_fts
+ON chunks USING GIN (to_tsvector('english', text));
 """
 
 

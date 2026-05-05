@@ -7,9 +7,21 @@ from openai import AsyncOpenAI
 from shared.utils.config import get_settings
 
 
+def configured_llm_provider() -> str:
+    return get_settings().llm_provider.strip().lower()
+
+
 def has_openai_credentials() -> bool:
     settings = get_settings()
     return bool(settings.openai_api_key and settings.openai_api_key != "replace-me")
+
+
+def has_anthropic_credentials() -> bool:
+    settings = get_settings()
+    return bool(
+        settings.anthropic_api_key
+        and settings.anthropic_api_key != "replace-me"
+    )
 
 
 def get_openai_client() -> AsyncOpenAI:

@@ -1,4 +1,9 @@
-import type { CourseListResponse, QueryResponse } from "../types/api";
+import type {
+  Course,
+  CourseDocumentsResponse,
+  CourseListResponse,
+  QueryResponse,
+} from "../types/api";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") || "http://localhost:8000";
@@ -35,4 +40,14 @@ export function askQuestion(question: string, topK = 5): Promise<QueryResponse> 
 
 export function listCourses(): Promise<CourseListResponse> {
   return requestJson<CourseListResponse>("/courses");
+}
+
+export function getCourse(slug: string): Promise<Course> {
+  return requestJson<Course>(`/courses/${slug}`);
+}
+
+export function listCourseDocuments(
+  slug: string,
+): Promise<CourseDocumentsResponse> {
+  return requestJson<CourseDocumentsResponse>(`/courses/${slug}/documents`);
 }
