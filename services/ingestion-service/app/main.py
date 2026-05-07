@@ -17,6 +17,7 @@ from shared.schemas.models import (
     IndexCoursesRequest,
     IndexCoursesResponse,
     IndexJobStatus,
+    IndexRedditRequest,
     OMSCentralScrapeRequest,
     OMSCentralScrapeResponse,
     RedditDocument,
@@ -330,6 +331,22 @@ def get_indexed_course_slugs() -> set[str]:
             return {row["course_slug"] for row in cursor.fetchall()}
 
 
+def get_reddit_indexed_course_slugs() -> set[str]:
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT DISTINCT documents.course_slug
+                FROM documents
+                JOIN chunks ON chunks.document_id = documents.id
+                WHERE documents.source = 'reddit'
+                    AND documents.course_slug IS NOT NULL
+                    AND documents.course_slug != ''
+                """
+            )
+            return {row["course_slug"] for row in cursor.fetchall()}
+
+
 def _index_job_from_row(row: dict[str, Any]) -> IndexJobStatus:
     return IndexJobStatus(
         job_id=row["id"],
@@ -351,6 +368,18 @@ def _index_job_from_row(row: dict[str, Any]) -> IndexJobStatus:
     )
 
 
+def create_reddit_index_job(request: IndexRedditRequest) -> str:
+    return create_index_job(
+        IndexCoursesRequest(
+            course_slugs=request.course_slugs,
+            missing_only=request.missing_only,
+            include_reviews=True,
+            process_after=request.process_after,
+            limit=request.limit,
+        )
+    )
+
+
 @app.post("/index/courses", response_model=IndexCoursesResponse)
 async def start_course_index(
     request: IndexCoursesRequest,
@@ -362,6 +391,20 @@ async def start_course_index(
         job_id=job_id,
         status="queued",
         message="Course indexing job queued.",
+    )
+
+
+@app.post("/index/reddit", response_model=IndexCoursesResponse)
+async def start_reddit_index(
+    request: IndexRedditRequest,
+    background_tasks: BackgroundTasks,
+) -> IndexCoursesResponse:
+    job_id = create_reddit_index_job(request)
+    background_tasks.add_task(run_reddit_index_job, job_id, request)
+    return IndexCoursesResponse(
+        job_id=job_id,
+        status="queued",
+        message="Reddit indexing job queued.",
     )
 
 
@@ -465,6 +508,103 @@ async def run_course_index_job(job_id: str, request: IndexCoursesRequest) -> Non
         )
     finally:
         await client.aclose()
+
+
+async def run_reddit_index_job(job_id: str, request: IndexRedditRequest) -> None:
+    errors: list[dict[str, str]] = []
+    documents_persisted = 0
+    omscentral_client = OMSCentralClient(settings)
+    reddit_client = RedditClient(settings)
+
+    update_index_job(
+        job_id,
+        status="running",
+        started_at=datetime.now(timezone.utc),
+    )
+    try:
+        catalog = await omscentral_client.fetch_catalog()
+        catalog_by_slug = {course.slug: course for course in catalog}
+
+        if request.course_slugs:
+            missing = sorted(
+                slug for slug in request.course_slugs if slug not in catalog_by_slug
+            )
+            if missing:
+                raise ValueError(f"Unknown course slugs: {', '.join(missing)}")
+            selected_courses = [catalog_by_slug[slug] for slug in request.course_slugs]
+        else:
+            selected_courses = catalog
+
+        if request.missing_only:
+            indexed_slugs = get_reddit_indexed_course_slugs()
+            selected_courses = [
+                course for course in selected_courses if course.slug not in indexed_slugs
+            ]
+
+        if request.limit is not None:
+            selected_courses = selected_courses[: request.limit]
+
+        update_index_job(job_id, total_courses=len(selected_courses))
+
+        for index, course in enumerate(selected_courses, start=1):
+            try:
+                docs = await reddit_client.scrape_course_discussions(
+                    catalog,
+                    course_slugs=[course.slug],
+                    posts_per_course=request.posts_per_course,
+                    include_aliases=request.include_aliases,
+                    search_modes=request.search_modes,
+                    max_search_results_per_query=request.max_search_results_per_query,
+                )
+                persisted_docs = upsert_reddit_documents(docs)
+                documents_persisted += persisted_docs
+                DOCUMENTS_PERSISTED.labels(source="reddit").inc(persisted_docs)
+                for doc in docs:
+                    await publish_document_ingested(doc.document_id)
+            except Exception as exc:
+                errors.append(
+                    {
+                        "course_slug": course.slug,
+                        "error": str(exc),
+                    }
+                )
+
+            update_index_job(
+                job_id,
+                courses_indexed=index,
+                documents_persisted=documents_persisted,
+                errors=errors,
+            )
+
+        if request.process_after:
+            processing_result = await _process_indexed_documents()
+            errors.extend(processing_result["errors"])
+            update_index_job(
+                job_id,
+                processing_documents_processed=processing_result[
+                    "documents_processed"
+                ],
+                processing_chunks_created=processing_result["chunks_created"],
+                errors=errors,
+            )
+
+        update_index_job(
+            job_id,
+            status="completed_with_errors" if errors else "completed",
+            finished_at=datetime.now(timezone.utc),
+            errors=errors,
+        )
+    except Exception as exc:
+        errors.append({"course_slug": "", "error": str(exc)})
+        update_index_job(
+            job_id,
+            status="failed",
+            finished_at=datetime.now(timezone.utc),
+            errors=errors,
+        )
+    finally:
+        await omscentral_client.aclose()
+        await reddit_client.aclose()
 
 
 async def _process_indexed_documents() -> dict[str, Any]:
@@ -607,6 +747,11 @@ def upsert_reddit_documents(documents: list[RedditDocument]) -> int:
                         content = EXCLUDED.content,
                         content_hash = EXCLUDED.content_hash,
                         metadata = EXCLUDED.metadata,
+                        chunk_count = CASE
+                            WHEN documents.content_hash IS DISTINCT FROM EXCLUDED.content_hash
+                            THEN 0
+                            ELSE documents.chunk_count
+                        END,
                         updated_at = NOW()
                     """,
                     {
@@ -655,6 +800,9 @@ async def scrape_reddit(request: RedditScrapeRequest) -> RedditScrapeResponse:
                 catalog,
                 course_slugs=request.course_slugs or None,
                 posts_per_course=request.posts_per_course,
+                include_aliases=request.include_aliases,
+                search_modes=request.search_modes,
+                max_search_results_per_query=request.max_search_results_per_query,
             )
             all_docs.extend(course_docs)
 

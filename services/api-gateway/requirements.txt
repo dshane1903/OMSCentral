@@ -4,3 +4,4 @@ pydantic==2.11.7
 pydantic-settings==2.10.1
 httpx==0.28.1
 prometheus-client==0.22.1
+redis>=5.0,<6.0

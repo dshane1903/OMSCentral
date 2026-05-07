@@ -95,6 +95,19 @@ class IndexCoursesRequest(BaseModel):
     limit: int | None = Field(default=None, ge=1, le=500)
 
 
+class IndexRedditRequest(BaseModel):
+    course_slugs: list[str] = Field(default_factory=list)
+    missing_only: bool = True
+    posts_per_course: int = Field(default=25, ge=1, le=100)
+    include_aliases: bool = True
+    search_modes: list[str] = Field(
+        default_factory=lambda: ["relevance_all", "top_all", "top_year", "new_year"]
+    )
+    max_search_results_per_query: int = Field(default=25, ge=1, le=100)
+    process_after: bool = True
+    limit: int | None = Field(default=10, ge=1, le=500)
+
+
 class IndexCoursesResponse(BaseModel):
     job_id: str
     status: str
@@ -149,7 +162,12 @@ class RedditDocument(BaseModel):
 
 class RedditScrapeRequest(BaseModel):
     course_slugs: list[str] = Field(default_factory=list)
-    posts_per_course: int = Field(default=10, ge=1, le=50)
+    posts_per_course: int = Field(default=10, ge=1, le=100)
+    include_aliases: bool = True
+    search_modes: list[str] = Field(
+        default_factory=lambda: ["relevance_all", "top_all", "top_year", "new_year"]
+    )
+    max_search_results_per_query: int = Field(default=25, ge=1, le=100)
     include_recent: bool = True
     recent_limit: int = Field(default=25, ge=1, le=100)
     persist: bool = True
@@ -169,7 +187,7 @@ class GenerateAnswerRequest(BaseModel):
 
 
 class QueryRequest(BaseModel):
-    question: str = Field(min_length=1)
+    question: str = Field(min_length=1, max_length=2000)
     top_k: int = Field(default=5, ge=1, le=20)
 
 

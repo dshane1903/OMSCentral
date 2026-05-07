@@ -60,6 +60,8 @@ class LlmServiceIntegrationTests(unittest.TestCase):
         )
 
         self.assertIn("only the provided context", system_prompt())
+        self.assertIn("OMSCentral as structured course-review evidence", system_prompt())
+        self.assertIn("Reddit as anecdotal discussion evidence", system_prompt())
         self.assertIn("avoid Markdown tables", system_prompt())
         prompt = user_prompt(request)
         self.assertIn("Question: How hard is CS 6250?", prompt)

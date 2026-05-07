@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     retrieval_service_url: str = "http://retrieval-service:8003"
     llm_service_url: str = "http://llm-service:8004"
     redis_cache_ttl_seconds: int = 300
+    rate_limit_enabled: bool = True
+    query_rate_limit_per_minute: int = 10
+    query_rate_limit_per_day: int = 100
+    admin_api_key: str = "replace-me"
     api_gateway_port: int = 8000
     ingestion_service_port: int = 8001
     embedding_service_port: int = 8002

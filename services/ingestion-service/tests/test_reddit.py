@@ -8,6 +8,8 @@ import unittest
 
 from app.scrapers.reddit import (
     build_document_content,
+    build_course_search_queries,
+    course_code_variants,
     extract_comment_text,
     match_course,
     parse_post_listing,
@@ -33,8 +35,8 @@ def make_catalog() -> list[CourseCatalogEntry]:
         ),
         CourseCatalogEntry(
             course_id="c3",
-            slug="graduate-algorithms",
-            name="Graduate Algorithms",
+            slug="introduction-to-graduate-algorithms",
+            name="Introduction to Graduate Algorithms",
             codes=["CS 6515"],
         ),
     ]
@@ -206,16 +208,45 @@ class MatchCourseTests(unittest.TestCase):
     def test_matches_course_code_no_separator(self):
         course = match_course("Anyone taking CS6515?", self.catalog)
         self.assertIsNotNone(course)
-        self.assertEqual(course.slug, "graduate-algorithms")
+        self.assertEqual(course.slug, "introduction-to-graduate-algorithms")
 
     def test_matches_course_name(self):
         course = match_course("Computer Networks was my favorite", self.catalog)
         self.assertIsNotNone(course)
         self.assertEqual(course.slug, "computer-networks")
 
+    def test_matches_known_alias(self):
+        course = match_course("Is GA really as stressful as people say?", self.catalog)
+        self.assertIsNotNone(course)
+        self.assertEqual(course.slug, "introduction-to-graduate-algorithms")
+
     def test_returns_none_for_no_match(self):
         course = match_course("I love pizza", self.catalog)
         self.assertIsNone(course)
+
+
+class CourseSearchQueryTests(unittest.TestCase):
+    def test_course_code_variants_include_common_reddit_spellings(self):
+        self.assertEqual(
+            course_code_variants("CS-6210"),
+            ["CS 6210", "CS-6210", "CS6210"],
+        )
+
+    def test_build_course_search_queries_includes_aliases_and_omscs_variants(self):
+        course = CourseCatalogEntry(
+            course_id="c4",
+            slug="advanced-operating-systems",
+            name="Advanced Operating Systems",
+            codes=["CS-6210"],
+        )
+
+        queries = build_course_search_queries(course)
+
+        self.assertIn("CS 6210", queries)
+        self.assertIn("CS-6210 OMSCS", queries)
+        self.assertIn("Advanced Operating Systems", queries)
+        self.assertIn("AOS", queries)
+        self.assertIn("AOS OMSCS", queries)
 
 
 class ExtractCommentTextTests(unittest.TestCase):

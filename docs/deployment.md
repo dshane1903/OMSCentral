@@ -43,6 +43,8 @@ Do not commit real values. Store them in Secrets Manager, SSM Parameter Store,
 or the deployment platform's secret store.
 
 - `OPENAI_API_KEY`
+- `ANTHROPIC_API_KEY` if `LLM_PROVIDER=anthropic`
+- `ADMIN_API_KEY`
 - `POSTGRES_PASSWORD`
 - `RABBITMQ_PASSWORD`
 - Grafana admin password
@@ -55,8 +57,24 @@ deployment.
 
 - Use non-default database and RabbitMQ passwords.
 - Set `OPENAI_API_KEY` through the secret store only.
+- Set `ADMIN_API_KEY` to a long random value. The API gateway rejects admin
+  endpoints when this is still `replace-me`.
 - Set service URLs to internal service discovery names.
 - Set Postgres, Redis, and RabbitMQ hosts to managed service endpoints.
+- Keep API gateway rate limiting enabled for public deployments:
+  `RATE_LIMIT_ENABLED=true`, `QUERY_RATE_LIMIT_PER_MINUTE=10`, and
+  `QUERY_RATE_LIMIT_PER_DAY=100` are conservative beta defaults.
+- Send `X-Admin-Token: <ADMIN_API_KEY>` or
+  `Authorization: Bearer <ADMIN_API_KEY>` only from trusted admin tooling for
+  scrape, index, and processing endpoints.
+- Backfill Reddit separately from OMSCentral with `POST /index/reddit`. V2
+  Reddit backfills search course code variants, full course names, known aliases,
+  and multiple Reddit search modes. A small beta-friendly request is:
+  `{"missing_only": true, "posts_per_course": 25, "include_aliases": true, "search_modes": ["relevance_all", "top_all", "top_year", "new_year"], "max_search_results_per_query": 25, "process_after": true, "limit": 10}`.
+  Use explicit `course_slugs` for targeted gaps such as
+  `["introduction-to-graduate-algorithms"]`, or use
+  `{"missing_only": false, "posts_per_course": 50, "limit": 132}` for a deeper
+  source refresh across the catalog.
 - Keep `PROMETHEUS` and service metrics endpoints off the public internet.
 - Use HTTPS for the frontend and API gateway.
 - Add health checks for every ECS service.
