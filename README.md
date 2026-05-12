@@ -1,62 +1,125 @@
-# OMSCS Course Intelligence Platform
+# OMSCS Lens
 
-A retrieval-augmented Q&A platform for OMSCS students. Ingests course
-reviews, embeds them, and answers natural-language questions like
-"How hard is CS 6250 if I work full-time?" with citations.
+Course planning for Georgia Tech's OMSCS program, grounded in cited student
+evidence.
 
-## Current Services
+[Live app](https://omscslens.com)
 
-- `api-gateway` — public HTTP entrypoint, proxies to internal services
-- `ingestion-service` — scrapes OMSCentral and Reddit r/OMSCS, persists
-  normalized review documents in Postgres, and publishes `document.ingested`
-  events to RabbitMQ
-- `processing-service` — consumes `document.ingested` events, chunks the
-  document content, calls the embedding service, and writes retrieval-ready
-  chunks to pgvector. Also runs a reconciliation poller that picks up any
-  documents whose events were dropped (broker outage, etc.)
-- `embedding-service` — wraps OpenAI embeddings (with a deterministic
-  fallback for local dev without an API key)
-- `retrieval-service` — hybrid dense-sparse retrieval over chunks, calls the
-  LLM service with retrieved context, caches answers in Redis
-- `llm-service` — grounded answer generation against retrieved context
+OMSCS Lens is a retrieval-augmented course-planning assistant. Ask questions
+like "What should I know before taking Graduate Algorithms?" or "Compare ML,
+AI, and Deep Learning for someone working full time" and get an answer backed
+by source snippets from OMSCentral reviews and curated public student
+discussion.
 
-## Event-Driven Pipeline
+This project is unofficial and is not affiliated with Georgia Tech, OMSCS,
+OMSCentral, or Reddit.
 
-Ingestion and processing are wired through RabbitMQ:
+## What It Does
 
+- Answers natural-language OMSCS course planning questions
+- Retrieves relevant evidence from course reviews and curated discussion links
+- Shows citations with source, date, match score, and original link
+- Sorts citations by best match, newest, or oldest
+- Browses and compares course workload, difficulty, ratings, and review counts
+- Surfaces source coverage for each course
+- Runs as a production AWS deployment at `omscslens.com`
+
+## Why This Exists
+
+OMSCS students make high-stakes course decisions from scattered information:
+reviews, Reddit threads, syllabi, anecdotes, and half-remembered warnings from
+older cohorts. OMSCS Lens tries to make that process calmer by turning those
+materials into a cited Q&A experience.
+
+It does not replace advising. It does not guarantee correctness. It helps you
+find and inspect the evidence faster.
+
+## Product Surface
+
+The app has two primary views:
+
+- **Ask**: a clean answer surface for course planning questions.
+- **Courses**: a catalog view for filtering, comparing, and inspecting source
+  coverage by course.
+
+Priority course coverage currently focuses on:
+
+`GA`, `ML`, `AI`, `CN`, `SDP`, `GIOS`, `AOS`, `DBS`, `HCI`, `ML4T`, `DL`, `RL`,
+and `NLP`.
+
+## Architecture
+
+OMSCS Lens is built as a small RAG system with separate services for ingestion,
+processing, retrieval, embedding, and generation.
+
+```text
+Browser
+  -> CloudFront
+  -> API Gateway
+  -> Retrieval Service
+  -> LLM Service
+
+Ingestion Service
+  -> Postgres
+  -> RabbitMQ / Amazon MQ
+  -> Processing Service
+  -> Embedding Service
+  -> pgvector chunks
 ```
-ingestion ──publish──▶ documents (topic exchange)
-                          │  routing key: document.ingested
-                          ▼
-                processing.document.ingested  ◀────────┐
-                          │                            │
-              consumer fails (nack, no requeue)        │ TTL=30s, then dead-letter
-                          ▼                            │ back to documents exchange
-                  documents.dlx (direct)               │
-                   │                                   │
-        ┌──────────┴──────────┐                        │
-        ▼ retry               ▼ failed                 │
-  processing.document.retry   processing.document.failed
-        │                                              │
-        └──────────────────────────────────────────────┘
+
+### Services
+
+- `api-gateway`: public HTTP entrypoint and route proxy
+- `ingestion-service`: imports OMSCentral reviews and approved Reddit/source
+  evidence
+- `processing-service`: chunks documents, embeds them, and writes
+  retrieval-ready rows
+- `embedding-service`: wraps OpenAI embeddings with a deterministic local-dev
+  fallback
+- `retrieval-service`: hybrid dense/sparse retrieval, answer caching, and
+  query orchestration
+- `llm-service`: grounded answer generation over retrieved context
+
+### Retrieval
+
+The retrieval service uses hybrid search:
+
+- dense search with pgvector cosine similarity
+- sparse search with Postgres full-text search
+- Reciprocal Rank Fusion to merge rankings
+- Redis answer caching for repeated questions
+
+## Data Pipeline
+
+Postgres is the source of truth. RabbitMQ is the fast-path notification layer.
+The processing service also runs reconciliation polling so a missed broker
+event does not permanently strand a document.
+
+```text
+ingestion
+  -> documents table
+  -> document.ingested event
+  -> processing queue
+  -> chunks + embeddings
+  -> retrieval-ready pgvector index
 ```
 
-- The Postgres write is the source of truth. The event is a fast-path
-  notification to the consumer.
-- Failed deliveries are nacked without requeue, which routes them through
-  the DLX into the retry queue for a delayed retry. After `MAX_RETRIES`
-  cycles the message is moved to the terminal DLQ instead of looping.
-- The reconciliation poller in `processing-service` scans Postgres for
-  unchunked documents every 30 seconds, so missing events never cause
-  permanent data loss.
+Reddit API access was not approved for automated ingestion, so Reddit evidence
+is handled through curated/manual link workflows rather than an unattended
+Reddit API scraper.
 
-## Local Run
+See [docs/reddit-link-discovery.md](docs/reddit-link-discovery.md) for the
+current workflow.
+
+## Local Development
+
+Start the backend stack:
 
 ```bash
 docker compose -f infra/docker-compose.yml up --build
 ```
 
-Run the frontend in another shell:
+Start the frontend:
 
 ```bash
 cd frontend
@@ -64,90 +127,76 @@ npm install
 npm run dev
 ```
 
-The frontend runs on http://localhost:5173 and talks to the API gateway at
-http://localhost:8000 by default. Override `VITE_API_BASE_URL` for other API
-targets.
+The frontend runs at:
 
-Trigger a scrape:
-
-```bash
-curl -X POST http://localhost:8000/sources/omscentral/scrape \
-  -H "X-Admin-Token: $ADMIN_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"course_slugs":["software-architecture-and-design"],"persist":true}'
+```text
+http://localhost:5173
 ```
 
-Each persisted review will produce a `document.ingested` event that the
-processing service picks up automatically.
+The API gateway runs at:
 
-Backfill or refresh course data without returning every review in the HTTP
-response:
-
-```bash
-# Index every course that does not already have chunks
-curl -X POST http://localhost:8000/index/courses \
-  -H "X-Admin-Token: $ADMIN_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"course_slugs":[],"missing_only":true,"include_reviews":true,"process_after":false}'
-
-# Check job status
-curl -H "X-Admin-Token: $ADMIN_API_KEY" \
-  http://localhost:8000/index/jobs/<job_id>
+```text
+http://localhost:8000
 ```
 
-Use `course_slugs` to index a specific course, or set `missing_only` to `false`
-for a full refresh. The processing worker and reconciliation poller chunk and
-embed persisted documents in the background.
-
-Scrape Reddit r/OMSCS discussions:
+Override the API target with:
 
 ```bash
-# Scrape recent posts + course-specific discussions
-curl -X POST http://localhost:8000/sources/reddit/scrape \
-  -H "X-Admin-Token: $ADMIN_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"include_recent":true,"recent_limit":25,"persist":true}'
-
-# Scrape posts about specific courses
-curl -X POST http://localhost:8000/sources/reddit/scrape \
-  -H "X-Admin-Token: $ADMIN_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"course_slugs":["computer-networks"],"posts_per_course":10,"persist":true}'
+VITE_API_BASE_URL=http://localhost:8000 npm run dev
 ```
 
-Reddit posts flow through the same event-driven pipeline — each persisted
-post publishes a `document.ingested` event, gets chunked and embedded
-automatically. You can also force processing synchronously:
-
-```bash
-# Process every unchunked document now, one batch
-curl -X POST http://localhost:8005/process \
-  -H "X-Admin-Token: $ADMIN_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"limit":50,"max_batches":1}'
-
-# Process a specific document by id
-curl -X POST http://localhost:8005/process/<document_id> \
-  -H "X-Admin-Token: $ADMIN_API_KEY"
-```
-
-Once chunks are embedded, ask a question:
+## Example Queries
 
 ```bash
 curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
-  -d '{"question":"How hard is CS 6250 if I work full-time?"}'
+  -d '{"question":"What should I know before taking Graduate Algorithms?","top_k":6}'
 ```
 
-## Retrieval Evaluation
+```bash
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{"question":"Compare Machine Learning, AI, and Deep Learning for workload and payoff.","top_k":8}'
+```
 
-The retrieval service uses hybrid dense-sparse retrieval:
+## Admin Workflows
 
-- dense search: pgvector cosine similarity over chunk embeddings
-- sparse search: Postgres full-text search over chunk text
-- fusion: Reciprocal Rank Fusion (RRF)
+Index OMSCentral course data:
 
-Run a small retrieval eval against a running local stack:
+```bash
+curl -X POST http://localhost:8000/index/courses \
+  -H "X-Admin-Token: $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"course_slugs":[],"missing_only":true,"include_reviews":true,"process_after":true}'
+```
+
+Check background job status:
+
+```bash
+curl -H "X-Admin-Token: $ADMIN_API_KEY" \
+  http://localhost:8000/index/jobs/<job_id>
+```
+
+Import approved Reddit/source links:
+
+```bash
+API_BASE_URL="http://localhost:8000" \
+ADMIN_API_KEY="$ADMIN_API_KEY" \
+scripts/collect-and-import-priority-reddit.sh
+```
+
+Process pending documents directly:
+
+```bash
+curl -X POST http://localhost:8005/process \
+  -H "X-Admin-Token: $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"limit":50,"max_batches":1}'
+```
+
+## Evaluation
+
+Run a local retrieval eval:
 
 ```bash
 PYTHONPATH=services/retrieval-service:. \
@@ -157,38 +206,41 @@ PYTHONPATH=services/retrieval-service:. \
   --top-k 5
 ```
 
-Use `--mode dense` to compare against dense-only retrieval. Add labeled
-questions to the JSONL file with `relevant_course_slugs` and/or
-`relevant_document_ids`.
-
-The RabbitMQ management UI is exposed on http://localhost:15672
-(user: `rag`, password: `rag`) — useful for inspecting queue depth, the
-DLQ, and message rates while developing.
+Use `--mode dense` to compare dense-only retrieval against hybrid retrieval.
 
 ## Observability
 
-Every FastAPI service exposes Prometheus metrics at `/metrics`. The local
-compose stack also starts Prometheus and Grafana:
+Every FastAPI service exposes Prometheus metrics at `/metrics`.
 
-- Prometheus: http://localhost:9090
-- Grafana: http://localhost:3000 (user: `admin`, password: `admin`)
-- RabbitMQ metrics: http://localhost:15692/metrics
+The local compose stack includes:
 
-Grafana is provisioned with the Prometheus datasource and an `OMSCS Service
-Overview` dashboard covering request rate, 5xx rate, p95 latency, in-flight
-requests, RabbitMQ queue depth, and scrape health.
+- Prometheus: `http://localhost:9090`
+- Grafana: `http://localhost:3000`
+- RabbitMQ management: `http://localhost:15672`
 
-Application-level metrics include scrape runs, persisted documents, RabbitMQ
-publish outcomes, processed documents, chunks created, embedding batches/texts,
-query latency, retrieval cache hits/misses, and LLM generation outcomes.
+Grafana is provisioned with an `OMSCS Service Overview` dashboard covering
+request rate, 5xx rate, p95 latency, in-flight requests, queue depth, and
+scrape health.
 
-## Deployment
+## Production
 
-Deployment planning lives in [docs/deployment.md](docs/deployment.md), and the
-step-by-step AWS checklist lives in [docs/aws-runbook.md](docs/aws-runbook.md).
-The recommended production path is AWS ECS Fargate with RDS Postgres,
-ElastiCache Redis, Amazon MQ, private Prometheus/Grafana, Terraform, and
-GitHub Actions.
+Current production:
+
+- Frontend: [https://omscslens.com](https://omscslens.com)
+- Frontend hosting: S3 + CloudFront
+- Backend: ECS Fargate behind an Application Load Balancer
+- Database: RDS Postgres + pgvector
+- Cache: ElastiCache Redis
+- Queue: Amazon MQ / RabbitMQ
+- Secrets: AWS Secrets Manager
+- Scheduled refresh: EventBridge + Lambda
+- Logs and alarms: CloudWatch
+
+Deployment details live in:
+
+- [docs/deployment.md](docs/deployment.md)
+- [docs/aws-runbook.md](docs/aws-runbook.md)
+- [docs/architecture.md](docs/architecture.md)
 
 ## Tests
 
@@ -203,7 +255,30 @@ PYTHONPATH=. \
   python3 -m unittest services.processing-service.tests.test_messaging
 ```
 
-## Next Build Targets
+Frontend build:
 
-- deploy to a public host and put it in front of OMSCS students
-- citation rendering on retrieved answers
+```bash
+cd frontend
+npm run build
+```
+
+## Responsible Use
+
+OMSCS Lens is an unofficial planning tool. It should not be used as an
+academic authority, advising replacement, or source of private Georgia Tech
+content. Generated answers can be wrong; users should inspect citations and
+verify important decisions against official course pages, syllabi, advisors,
+and current program policies.
+
+Do not use this project to post private course content, violate the Georgia
+Tech Academic Honor Code, or misrepresent affiliation with Georgia Tech,
+OMSCS, OMSCentral, or Reddit.
+
+## Roadmap
+
+- Saved course plans
+- Personalized workload profiles
+- Semester-by-semester planning reports
+- Better source coverage dashboards
+- Citation quality scoring
+- Public feedback loop for incorrect or stale answers

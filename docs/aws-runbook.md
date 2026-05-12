@@ -146,9 +146,6 @@ curl -H "Authorization: Bearer $ADMIN_API_KEY" \
   "$API_BASE_URL/index/jobs/<job_id>"
 ```
 
-Expect Reddit to take much longer than OMSCentral because the scraper searches
-multiple query variants and respects Reddit pacing.
-
 ## Scheduled Refresh
 
 Use EventBridge Scheduler after the first seed is complete. It should call the
