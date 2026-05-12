@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     redis_port: int = 6379
     rabbitmq_host: str = "rabbitmq"
     rabbitmq_port: int = 5672
+    rabbitmq_scheme: str = "amqp"
     rabbitmq_user: str = "rag"
     rabbitmq_password: str = "rag"
     rabbitmq_retry_delay_ms: int = 30000
@@ -24,6 +25,8 @@ class Settings(BaseSettings):
     omscentral_user_agent: str = "omscs-course-intel/0.1"
     reddit_request_timeout_seconds: float = 30.0
     reddit_user_agent: str = "omscs-course-intel/0.1 (by /u/omscs-course-intel)"
+    reddit_client_id: str = ""
+    reddit_client_secret: str = ""
     llm_provider: str = "openai"
     openai_api_key: str = "replace-me"
     openai_embedding_model: str = "text-embedding-3-small"

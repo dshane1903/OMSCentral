@@ -1,7 +1,8 @@
 """
 Reddit scraper for r/OMSCS course discussions.
 
-Uses Reddit's public JSON API (no OAuth required for public subreddits).
+Uses Reddit's OAuth API when credentials are configured, otherwise falls back
+to Reddit's public JSON API for local development.
 Each post + its top comments becomes a single document, linked to a course
 when the post title or body mentions a known course code.
 """
@@ -11,7 +12,7 @@ import asyncio
 import hashlib
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
@@ -346,32 +347,68 @@ def post_to_document(
 
 
 class RedditClient:
-    """
-    Async client for Reddit's public JSON API.
-
-    No OAuth required — uses unauthenticated endpoints with a polite
-    User-Agent and rate limiting.
-    """
+    """Async client for Reddit API endpoints with optional OAuth."""
 
     def __init__(self, settings: "Settings") -> None:
         import httpx
 
         self._settings = settings
+        self._access_token: str | None = None
+        self._access_token_expires_at = datetime.min.replace(tzinfo=timezone.utc)
+        self._has_oauth_credentials = bool(
+            settings.reddit_client_id and settings.reddit_client_secret
+        )
         self._client = httpx.AsyncClient(
-            base_url="https://www.reddit.com",
+            base_url=(
+                "https://oauth.reddit.com"
+                if self._has_oauth_credentials
+                else "https://www.reddit.com"
+            ),
             timeout=settings.reddit_request_timeout_seconds,
             headers={
                 "User-Agent": settings.reddit_user_agent,
             },
             follow_redirects=True,
         )
+        self._auth_client = httpx.AsyncClient(
+            base_url="https://www.reddit.com",
+            timeout=settings.reddit_request_timeout_seconds,
+            headers={"User-Agent": settings.reddit_user_agent},
+        )
 
     async def aclose(self) -> None:
         await self._client.aclose()
+        await self._auth_client.aclose()
+
+    async def _ensure_access_token(self) -> None:
+        if not self._has_oauth_credentials:
+            return
+
+        now = datetime.now(timezone.utc)
+        if self._access_token and now < self._access_token_expires_at:
+            return
+
+        response = await self._auth_client.post(
+            "/api/v1/access_token",
+            data={"grant_type": "client_credentials"},
+            auth=(
+                self._settings.reddit_client_id,
+                self._settings.reddit_client_secret,
+            ),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        self._access_token = payload["access_token"]
+        expires_in = int(payload.get("expires_in", 3600))
+        self._access_token_expires_at = now + timedelta(
+            seconds=max(expires_in - 60, 60),
+        )
+        self._client.headers["Authorization"] = f"Bearer {self._access_token}"
 
     async def _get_json(self, path: str, params: dict[str, Any] | None = None) -> Any:
         """Fetch a JSON endpoint with rate-limit delay."""
         await asyncio.sleep(REQUEST_DELAY_SECONDS)
+        await self._ensure_access_token()
         url = path
         if params:
             url = f"{path}?{urlencode(params)}"

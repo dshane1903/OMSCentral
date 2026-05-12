@@ -16,7 +16,9 @@ from app.scrapers.reddit import (
     parse_post_with_comments,
     post_to_document,
 )
+from app.main import build_manual_reddit_document
 from shared.schemas.models import CourseCatalogEntry
+from shared.schemas.models import ManualRedditDocumentRequest
 
 
 def make_catalog() -> list[CourseCatalogEntry]:
@@ -215,6 +217,7 @@ class MatchCourseTests(unittest.TestCase):
         self.assertIsNotNone(course)
         self.assertEqual(course.slug, "computer-networks")
 
+
     def test_matches_known_alias(self):
         course = match_course("Is GA really as stressful as people say?", self.catalog)
         self.assertIsNotNone(course)
@@ -223,6 +226,30 @@ class MatchCourseTests(unittest.TestCase):
     def test_returns_none_for_no_match(self):
         course = match_course("I love pizza", self.catalog)
         self.assertIsNone(course)
+
+
+class ManualRedditDocumentTests(unittest.TestCase):
+    def test_builds_deterministic_curated_reddit_document(self):
+        course = make_catalog()[0]
+        request = ManualRedditDocumentRequest(
+            course_slug="computer-networks",
+            title="CS 6250 workload discussion",
+            url="https://www.reddit.com/r/OMSCS/comments/abc123/example/",
+            content="Students describe Computer Networks as manageable with steady projects.",
+            author="student1",
+            subreddit="r/OMSCS",
+        )
+
+        doc = build_manual_reddit_document(request, course)
+        second_doc = build_manual_reddit_document(request, course)
+
+        self.assertEqual(doc.document_id, second_doc.document_id)
+        self.assertEqual(doc.source, "reddit")
+        self.assertEqual(doc.source_document_id.split(":", 1)[0], "manual")
+        self.assertEqual(doc.course_slug, "computer-networks")
+        self.assertEqual(doc.course_name, "Computer Networks")
+        self.assertEqual(doc.subreddit, "OMSCS")
+        self.assertEqual(doc.metadata["ingestion_mode"], "manual")
 
 
 class CourseSearchQueryTests(unittest.TestCase):

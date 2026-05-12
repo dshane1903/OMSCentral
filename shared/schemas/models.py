@@ -181,6 +181,41 @@ class RedditScrapeResponse(BaseModel):
     documents: list[RedditDocument] = Field(default_factory=list)
 
 
+class ManualRedditDocumentRequest(BaseModel):
+    course_slug: str = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=500)
+    url: str = Field(min_length=1, max_length=2000)
+    content: str = Field(min_length=20, max_length=20000)
+    author: str = Field(default="unknown", max_length=100)
+    subreddit: str = Field(default="OMSCS", max_length=100)
+    published_at: datetime | None = None
+    score: int = 0
+    num_comments: int = 0
+    process_after: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ManualRedditDocumentResponse(BaseModel):
+    source: str = "reddit"
+    document_id: str
+    source_document_id: str
+    documents_persisted: int
+    processing_documents_processed: int = 0
+    processing_chunks_created: int = 0
+    status: str
+
+
+class DeleteDocumentsRequest(BaseModel):
+    document_ids: list[str] = Field(min_length=1, max_length=1000)
+    source: str | None = None
+
+
+class DeleteDocumentsResponse(BaseModel):
+    requested_count: int
+    deleted_count: int
+    deleted_document_ids: list[str] = Field(default_factory=list)
+
+
 class GenerateAnswerRequest(BaseModel):
     question: str = Field(min_length=1)
     context: list[str]

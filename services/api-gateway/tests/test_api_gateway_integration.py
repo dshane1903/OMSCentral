@@ -234,6 +234,81 @@ class ApiGatewayIntegrationTests(unittest.TestCase):
         )
 
     @patch("app.main.post_json", new_callable=AsyncMock)
+    def test_manual_reddit_source_endpoint_forwards_curated_source(self, post_json):
+        settings.admin_api_key = "test-admin-token"
+        post_json.return_value = {
+            "source": "reddit",
+            "document_id": "reddit-manual-abc123",
+            "source_document_id": "manual:abc123",
+            "documents_persisted": 1,
+            "processing_documents_processed": 1,
+            "processing_chunks_created": 2,
+            "status": "processed",
+        }
+
+        response = self.client.post(
+            "/sources/reddit/manual",
+            headers={"x-admin-token": "test-admin-token"},
+            json={
+                "course_slug": "computer-networks",
+                "title": "CS 6250 workload discussion",
+                "url": "https://www.reddit.com/r/OMSCS/comments/abc123/example/",
+                "content": "Students in this thread describe CS 6250 as manageable but project-heavy.",
+                "author": "student1",
+                "subreddit": "OMSCS",
+                "process_after": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "processed")
+        url, forwarded_payload = post_json.await_args.args[:2]
+        self.assertTrue(url.endswith("/sources/reddit/manual"))
+        self.assertEqual(
+            forwarded_payload,
+            {
+                "course_slug": "computer-networks",
+                "title": "CS 6250 workload discussion",
+                "url": "https://www.reddit.com/r/OMSCS/comments/abc123/example/",
+                "content": (
+                    "Students in this thread describe CS 6250 as manageable "
+                    "but project-heavy."
+                ),
+                "author": "student1",
+                "subreddit": "OMSCS",
+                "published_at": None,
+                "score": 0,
+                "num_comments": 0,
+                "process_after": True,
+                "metadata": {},
+            },
+        )
+
+    @patch("app.main.post_json", new_callable=AsyncMock)
+    def test_delete_documents_endpoint_requires_admin_and_forwards_ids(self, post_json):
+        settings.admin_api_key = "test-admin-token"
+        post_json.return_value = {
+            "requested_count": 2,
+            "deleted_count": 2,
+            "deleted_document_ids": ["doc-1", "doc-2"],
+        }
+
+        response = self.client.post(
+            "/documents/delete",
+            headers={"authorization": "Bearer test-admin-token"},
+            json={"document_ids": ["doc-1", "doc-2"], "source": "reddit"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["deleted_count"], 2)
+        url, forwarded_payload = post_json.await_args.args[:2]
+        self.assertTrue(url.endswith("/documents/delete"))
+        self.assertEqual(
+            forwarded_payload,
+            {"document_ids": ["doc-1", "doc-2"], "source": "reddit"},
+        )
+
+    @patch("app.main.post_json", new_callable=AsyncMock)
     def test_query_rejects_oversized_question_before_proxying(self, post_json):
         settings.rate_limit_enabled = False
 

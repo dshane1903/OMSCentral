@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import uuid
+from hashlib import sha256
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException
@@ -14,10 +16,14 @@ from app.scrapers.reddit import RedditClient
 from shared.schemas.models import (
     CourseCatalogEntry,
     CourseReview,
+    DeleteDocumentsRequest,
+    DeleteDocumentsResponse,
     IndexCoursesRequest,
     IndexCoursesResponse,
     IndexJobStatus,
     IndexRedditRequest,
+    ManualRedditDocumentRequest,
+    ManualRedditDocumentResponse,
     OMSCentralScrapeRequest,
     OMSCentralScrapeResponse,
     RedditDocument,
@@ -224,6 +230,28 @@ def upsert_reviews(reviews: list[CourseReview]) -> int:
     return len(reviews)
 
 
+def delete_documents(request: DeleteDocumentsRequest) -> DeleteDocumentsResponse:
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM documents
+                WHERE id = ANY(%s::text[])
+                    AND (%s::text IS NULL OR source = %s)
+                RETURNING id
+                """,
+                (request.document_ids, request.source, request.source),
+            )
+            deleted_ids = [row["id"] for row in cursor.fetchall()]
+        connection.commit()
+
+    return DeleteDocumentsResponse(
+        requested_count=len(request.document_ids),
+        deleted_count=len(deleted_ids),
+        deleted_document_ids=deleted_ids,
+    )
+
+
 def create_index_job(request: IndexCoursesRequest) -> str:
     job_id = str(uuid.uuid4())
     with db_connection() as connection:
@@ -345,6 +373,54 @@ def get_reddit_indexed_course_slugs() -> set[str]:
                 """
             )
             return {row["course_slug"] for row in cursor.fetchall()}
+
+
+def get_course_catalog_entry(slug: str) -> CourseCatalogEntry | None:
+    with db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    course_id,
+                    source,
+                    slug,
+                    name,
+                    codes,
+                    credit_hours,
+                    description,
+                    rating,
+                    difficulty,
+                    workload,
+                    review_count,
+                    official_url,
+                    syllabus_url,
+                    metadata
+                FROM course_catalog
+                WHERE slug = %s
+                """,
+                (slug,),
+            )
+            row = cursor.fetchone()
+
+    if row is None:
+        return None
+
+    return CourseCatalogEntry(
+        course_id=row["course_id"],
+        source=row["source"],
+        slug=row["slug"],
+        name=row["name"],
+        codes=row["codes"] or [],
+        credit_hours=row["credit_hours"],
+        description=row["description"],
+        rating=row["rating"],
+        difficulty=row["difficulty"],
+        workload=row["workload"],
+        review_count=row["review_count"],
+        official_url=row["official_url"],
+        syllabus_url=row["syllabus_url"],
+        metadata=row["metadata"] or {},
+    )
 
 
 def _index_job_from_row(row: dict[str, Any]) -> IndexJobStatus:
@@ -780,6 +856,96 @@ def upsert_reddit_documents(documents: list[RedditDocument]) -> int:
         connection.commit()
 
     return persisted
+
+
+def build_manual_reddit_document(
+    request: ManualRedditDocumentRequest,
+    course: CourseCatalogEntry,
+) -> RedditDocument:
+    parsed_url = urlparse(request.url)
+    host = parsed_url.netloc.lower()
+    if "reddit.com" not in host:
+        raise HTTPException(
+            status_code=422,
+            detail="Manual Reddit sources must link to a reddit.com permalink.",
+        )
+
+    normalized_url = request.url.strip()
+    source_hash = sha256(
+        f"{request.course_slug}:{normalized_url}".encode("utf-8")
+    ).hexdigest()[:24]
+    content = request.content.strip()
+    content_hash = sha256(content.encode("utf-8")).hexdigest()
+
+    return RedditDocument(
+        document_id=f"reddit-manual-{source_hash}",
+        source_document_id=f"manual:{source_hash}",
+        title=request.title.strip(),
+        url=normalized_url,
+        author=request.author.strip() or "unknown",
+        score=request.score,
+        num_comments=request.num_comments,
+        published_at=request.published_at,
+        course_id=course.course_id,
+        course_slug=course.slug,
+        course_name=course.name,
+        course_codes=course.codes,
+        content=content,
+        content_hash=content_hash,
+        subreddit=request.subreddit.strip().removeprefix("r/") or "OMSCS",
+        metadata={
+            **request.metadata,
+            "ingestion_mode": "manual",
+            "curation_note": "Human-curated Reddit excerpt with permalink.",
+        },
+    )
+
+
+@app.post("/sources/reddit/manual", response_model=ManualRedditDocumentResponse)
+async def ingest_manual_reddit_source(
+    request: ManualRedditDocumentRequest,
+) -> ManualRedditDocumentResponse:
+    course = get_course_catalog_entry(request.course_slug)
+    if course is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown course slug: {request.course_slug}",
+        )
+
+    doc = build_manual_reddit_document(request, course)
+    persisted_count = upsert_reddit_documents([doc])
+    DOCUMENTS_PERSISTED.labels(source="reddit").inc(persisted_count)
+    await publish_document_ingested(doc.document_id)
+
+    processing_result = {
+        "documents_processed": 0,
+        "chunks_created": 0,
+        "errors": [],
+    }
+    if request.process_after:
+        processing_result = await _process_indexed_documents()
+
+    status = "persisted"
+    if processing_result["errors"]:
+        status = "persisted_with_processing_errors"
+    elif request.process_after:
+        status = "processed"
+
+    return ManualRedditDocumentResponse(
+        document_id=doc.document_id,
+        source_document_id=doc.source_document_id,
+        documents_persisted=persisted_count,
+        processing_documents_processed=processing_result["documents_processed"],
+        processing_chunks_created=processing_result["chunks_created"],
+        status=status,
+    )
+
+
+@app.post("/documents/delete", response_model=DeleteDocumentsResponse)
+async def delete_documents_route(
+    request: DeleteDocumentsRequest,
+) -> DeleteDocumentsResponse:
+    return delete_documents(request)
 
 
 @app.post("/sources/reddit/scrape", response_model=RedditScrapeResponse)

@@ -22,6 +22,8 @@ containers with managed infrastructure.
 - Infrastructure: Terraform
 - CI/CD: GitHub Actions
 
+The concrete first-deploy checklist is in [aws-runbook.md](aws-runbook.md).
+
 ## Public vs Private
 
 Expose only the frontend and API gateway publicly.
@@ -95,3 +97,22 @@ The first production milestone should be deliberately boring:
 
 Terraform can be added once this shape is settled; avoid jumping straight to
 EKS unless the goal is specifically Kubernetes practice.
+
+## Scheduled Backfills
+
+Do the first OMSCentral and Reddit backfills manually after the production
+database is live. After that, use EventBridge Scheduler for refreshes rather
+than leaving a public user path responsible for data loading.
+
+Recommended cadence:
+
+- OMSCentral: weekly `POST /index/courses` with `missing_only=true`
+- Reddit: daily or every-other-day `POST /index/reddit` with
+  `missing_only=true`
+- Deep Reddit refresh: manual, `missing_only=false`, because it is slower and
+  can create more duplicate/noisy evidence to evaluate
+
+All scheduled calls must include `X-Admin-Token: <ADMIN_API_KEY>` or
+`Authorization: Bearer <ADMIN_API_KEY>`. If EventBridge cannot attach that
+header in the chosen setup, route the schedule through a small Lambda that reads
+the token from Secrets Manager and calls the API gateway.

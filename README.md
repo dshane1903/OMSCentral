@@ -72,6 +72,7 @@ Trigger a scrape:
 
 ```bash
 curl -X POST http://localhost:8000/sources/omscentral/scrape \
+  -H "X-Admin-Token: $ADMIN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"course_slugs":["software-architecture-and-design"],"persist":true}'
 ```
@@ -85,11 +86,13 @@ response:
 ```bash
 # Index every course that does not already have chunks
 curl -X POST http://localhost:8000/index/courses \
+  -H "X-Admin-Token: $ADMIN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"course_slugs":[],"missing_only":true,"include_reviews":true,"process_after":false}'
 
 # Check job status
-curl http://localhost:8000/index/jobs/<job_id>
+curl -H "X-Admin-Token: $ADMIN_API_KEY" \
+  http://localhost:8000/index/jobs/<job_id>
 ```
 
 Use `course_slugs` to index a specific course, or set `missing_only` to `false`
@@ -101,11 +104,13 @@ Scrape Reddit r/OMSCS discussions:
 ```bash
 # Scrape recent posts + course-specific discussions
 curl -X POST http://localhost:8000/sources/reddit/scrape \
+  -H "X-Admin-Token: $ADMIN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"include_recent":true,"recent_limit":25,"persist":true}'
 
 # Scrape posts about specific courses
 curl -X POST http://localhost:8000/sources/reddit/scrape \
+  -H "X-Admin-Token: $ADMIN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"course_slugs":["computer-networks"],"posts_per_course":10,"persist":true}'
 ```
@@ -117,11 +122,13 @@ automatically. You can also force processing synchronously:
 ```bash
 # Process every unchunked document now, one batch
 curl -X POST http://localhost:8005/process \
+  -H "X-Admin-Token: $ADMIN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"limit":50,"max_batches":1}'
 
 # Process a specific document by id
-curl -X POST http://localhost:8005/process/<document_id>
+curl -X POST http://localhost:8005/process/<document_id> \
+  -H "X-Admin-Token: $ADMIN_API_KEY"
 ```
 
 Once chunks are embedded, ask a question:
@@ -177,9 +184,11 @@ query latency, retrieval cache hits/misses, and LLM generation outcomes.
 
 ## Deployment
 
-Deployment planning lives in [docs/deployment.md](docs/deployment.md). The
-recommended production path is AWS ECS Fargate with RDS Postgres, ElastiCache
-Redis, Amazon MQ, private Prometheus/Grafana, Terraform, and GitHub Actions.
+Deployment planning lives in [docs/deployment.md](docs/deployment.md), and the
+step-by-step AWS checklist lives in [docs/aws-runbook.md](docs/aws-runbook.md).
+The recommended production path is AWS ECS Fargate with RDS Postgres,
+ElastiCache Redis, Amazon MQ, private Prometheus/Grafana, Terraform, and
+GitHub Actions.
 
 ## Tests
 

@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowUpRight,
   BookOpen,
-  CheckCircle2,
-  Clock3,
+  Database,
   GitCompareArrows,
+  Layers3,
   Loader2,
   MessageSquareText,
   Search,
@@ -17,13 +17,46 @@ import { compactSource, formatDate, formatNumber } from "./lib/format";
 import type { Course, CourseDocument, QueryResponse } from "./types/api";
 
 const examples = [
-  "How hard is CS 6250 if I work full time?",
-  "Which OMSCS courses are lighter but still useful?",
-  "Compare Computer Networks and Software Architecture and Design.",
+  "What should I know before taking Graduate Algorithms?",
+  "Compare Machine Learning, AI, and Deep Learning for workload and payoff.",
+  "Which foundational course is safest while working full time?",
 ];
 
 type View = "ask" | "courses";
 type FilterBand = "all" | "light" | "balanced" | "heavy";
+type CitationSort = "match" | "newest" | "oldest";
+
+const priorityCourseSlugs = [
+  "graduate-algorithms",
+  "machine-learning",
+  "artificial-intelligence",
+  "computer-networks",
+  "software-development-process",
+  "introduction-to-operating-systems",
+  "advanced-operating-systems",
+  "database-systems-concepts-and-design",
+  "human-computer-interaction",
+  "machine-learning-for-trading",
+  "deep-learning",
+  "reinforcement-learning",
+  "natural-language-processing",
+];
+
+const priorityCourseCodes = new Set([
+  "GA",
+  "ML",
+  "AI",
+  "CN",
+  "SDP",
+  "GIOS",
+  "AOS",
+  "DBS",
+  "HCI",
+  "ML4T",
+  "DL",
+  "RL",
+  "NLP",
+]);
 
 export default function App() {
   const [view, setView] = useState<View>("ask");
@@ -41,6 +74,8 @@ export default function App() {
   const [detailError, setDetailError] = useState<string | null>(null);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   const [compareCourses, setCompareCourses] = useState<Course[]>([]);
+  const [citationSort, setCitationSort] = useState<CitationSort>("match");
+  const answerRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     let ignore = false;
@@ -85,6 +120,38 @@ export default function App() {
       })
       .slice(0, view === "ask" ? 18 : 60);
   }, [courseSearch, courses, difficultyFilter, view, workloadFilter]);
+
+  const priorityCourses = useMemo(() => {
+    return courses
+      .filter(
+        (course) =>
+          priorityCourseSlugs.includes(course.slug) ||
+          course.codes.some((code) => priorityCourseCodes.has(code.toUpperCase())),
+      )
+      .sort((first, second) => {
+        const firstIndex = priorityCourseSlugs.indexOf(first.slug);
+        const secondIndex = priorityCourseSlugs.indexOf(second.slug);
+        return normalizePriorityIndex(firstIndex) - normalizePriorityIndex(secondIndex);
+      });
+  }, [courses]);
+
+  const sortedChunks = useMemo(() => {
+    if (!query) {
+      return [];
+    }
+    return [...query.chunks].sort((first, second) =>
+      compareChunks(first, second, citationSort),
+    );
+  }, [citationSort, query]);
+
+  useEffect(() => {
+    if (!query) {
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      answerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, [query]);
 
   async function submitQuestion(nextQuestion = question) {
     const trimmed = nextQuestion.trim();
@@ -166,7 +233,7 @@ export default function App() {
             </div>
             <div>
               <p className="text-sm font-semibold uppercase tracking-[0.18em] text-moss">
-                OMSCS Intelligence
+                OMSCS Lens
               </p>
               <h1 className="text-2xl font-semibold leading-tight sm:text-3xl">
                 Course planning, grounded in evidence
@@ -194,95 +261,61 @@ export default function App() {
         </header>
 
         {view === "ask" ? (
-          <section className="grid flex-1 gap-6 py-6 lg:grid-cols-[minmax(0,0.95fr)_minmax(380px,0.65fr)]">
-            <div className="flex min-h-[640px] flex-col rounded-lg border border-line bg-panel shadow-soft">
-              <div className="border-b border-line p-4 sm:p-5">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <h2 className="text-xl font-semibold">Ask</h2>
-                    <p className="mt-1 text-sm text-ink/60">
-                      Retrieved course evidence appears beside each answer.
-                    </p>
-                  </div>
-                  {query && (
-                    <div className="hidden items-center gap-2 rounded-full border border-line bg-paper px-3 py-1 text-sm text-moss sm:flex">
-                      <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
-                      {query.chunks.length} citations
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="flex-1 p-4 sm:p-5">
-                {query ? (
-                  <article className="space-y-5">
-                    <div className="rounded-lg bg-ink p-5 text-paper">
-                      <p className="text-sm uppercase tracking-[0.18em] text-paper/60">
-                        Answer
-                      </p>
-                      <MarkdownAnswer text={query.answer} />
-                    </div>
-                    <div className="grid gap-3">
-                      {query.chunks.map((chunk) => (
-                        <CitationCard
-                          key={`${chunk.document_id}-${chunk.chunk_index}`}
-                          chunk={chunk}
-                        />
-                      ))}
-                    </div>
-                  </article>
-                ) : (
-                  <div className="flex h-full min-h-[420px] flex-col justify-center rounded-lg border border-dashed border-line bg-paper/60 p-6">
-                    <div className="max-w-2xl">
-                      <p className="text-sm font-semibold uppercase tracking-[0.18em] text-clay">
-                        Ready
-                      </p>
-                      <h2 className="mt-3 text-3xl font-semibold leading-tight sm:text-4xl">
-                        Start with a course decision.
-                      </h2>
-                      <div className="mt-6 flex flex-wrap gap-2">
-                        {examples.map((example) => (
-                          <button
-                            className="rounded-full border border-line bg-panel px-4 py-2 text-left text-sm font-medium text-ink transition hover:border-ink"
-                            key={example}
-                            type="button"
-                            onClick={() => submitQuestion(example)}
-                          >
-                            {example}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                )}
+          <section className="flex flex-1 justify-center py-8 sm:py-12">
+            <div className="w-full max-w-4xl">
+              <div className="mx-auto max-w-3xl text-center">
+                <p className="text-sm font-semibold uppercase tracking-[0.18em] text-moss">
+                  Ask
+                </p>
+                <h2 className="mt-4 text-3xl font-semibold leading-tight sm:text-5xl">
+                  Make course decisions less fuzzy.
+                </h2>
+                <p className="mx-auto mt-4 max-w-2xl text-base leading-7 text-ink/62">
+                  Ask about workload, difficulty, sequencing, tradeoffs, or fit.
+                  Answers use OMSCentral reviews and curated Reddit evidence.
+                </p>
               </div>
 
               <form
-                className="border-t border-line p-4 sm:p-5"
+                className="mx-auto mt-8 max-w-3xl"
                 onSubmit={(event) => {
                   event.preventDefault();
                   submitQuestion();
                 }}
               >
-                <div className="flex flex-col gap-3 rounded-lg border border-line bg-paper p-3 focus-within:border-ink sm:flex-row">
+                <div className="rounded-lg border border-line bg-panel p-3 shadow-soft transition focus-within:border-ink">
                   <textarea
-                    className="min-h-24 flex-1 resize-none bg-transparent text-base leading-7 outline-none placeholder:text-ink/35 sm:min-h-16"
+                    className="min-h-28 w-full resize-none bg-transparent px-2 py-2 text-base leading-7 outline-none placeholder:text-ink/35 sm:min-h-24"
                     value={question}
                     onChange={(event) => setQuestion(event.target.value)}
                     placeholder="Ask about workload, fit, tradeoffs, or course pairings"
                   />
-                  <button
-                    className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-lg bg-ink px-5 text-sm font-semibold text-paper transition hover:bg-marine disabled:cursor-not-allowed disabled:opacity-60"
-                    type="submit"
-                    disabled={isAsking}
-                  >
-                    {isAsking ? (
-                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                    ) : (
-                      <ArrowUpRight className="h-4 w-4" aria-hidden="true" />
-                    )}
-                    Ask
-                  </button>
+                  <div className="flex flex-col gap-3 border-t border-line pt-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex flex-wrap gap-2">
+                      {examples.slice(0, 2).map((example) => (
+                        <button
+                          className="rounded-full border border-line bg-paper px-3 py-1.5 text-left text-xs font-medium text-ink/70 transition hover:border-ink hover:text-ink"
+                          key={example}
+                          type="button"
+                          onClick={() => submitQuestion(example)}
+                        >
+                          {example}
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-lg bg-ink px-5 text-sm font-semibold text-paper transition hover:bg-marine disabled:cursor-not-allowed disabled:opacity-60"
+                      type="submit"
+                      disabled={isAsking}
+                    >
+                      {isAsking ? (
+                        <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                      ) : (
+                        <ArrowUpRight className="h-4 w-4" aria-hidden="true" />
+                      )}
+                      Ask
+                    </button>
+                  </div>
                 </div>
                 {queryError && (
                   <p className="mt-3 rounded-lg border border-clay/30 bg-clay/10 px-4 py-3 text-sm text-clay">
@@ -290,35 +323,69 @@ export default function App() {
                   </p>
                 )}
               </form>
-            </div>
 
-            <aside className="rounded-lg border border-line bg-panel p-4 shadow-soft sm:p-5">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-lg font-semibold">Course Index</h2>
-                  <p className="mt-1 text-sm text-ink/60">
-                    {courses.length ? `${courses.length} courses loaded` : "Loading"}
-                  </p>
+              <FocusCourseStrip
+                courses={priorityCourses}
+                onAsk={askAboutCourse}
+                onBrowse={() => setView("courses")}
+              />
+
+              {isAsking && (
+                <div className="mx-auto mt-10 flex max-w-3xl items-center gap-3 border-t border-line pt-8 text-sm font-medium text-ink/60">
+                  <span className="relative flex h-5 w-5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-marine/25" />
+                    <span className="relative inline-flex h-5 w-5 rounded-full border-2 border-marine border-t-transparent animate-spin" />
+                  </span>
+                  Gathering course evidence
                 </div>
-                <Clock3 className="h-5 w-5 text-gold" aria-hidden="true" />
-              </div>
-              <CourseSearch value={courseSearch} onChange={setCourseSearch} />
-              <div className="mt-4 grid max-h-[560px] gap-3 overflow-y-auto pr-1">
-                {coursesError ? (
-                  <p className="rounded-lg border border-clay/30 bg-clay/10 p-3 text-sm text-clay">
-                    {coursesError}
-                  </p>
-                ) : (
-                  filteredCourses.map((course) => (
-                    <CourseRow
-                      key={course.slug}
-                      course={course}
-                      onOpen={openCourse}
-                    />
-                  ))
-                )}
-              </div>
-            </aside>
+              )}
+
+              {query && (
+                <article
+                  className="answer-enter mx-auto mt-12 max-w-3xl border-t border-line pt-8"
+                  ref={answerRef}
+                >
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="text-sm font-semibold uppercase tracking-[0.18em] text-clay">
+                        Answer
+                      </p>
+                      <p className="mt-1 text-sm text-ink/55">
+                        {sortedChunks.length} citations retrieved
+                      </p>
+                    </div>
+                  </div>
+
+                  <MarkdownAnswer text={query.answer} />
+
+                  <section className="mt-10">
+                    <div className="flex flex-col gap-3 border-t border-line pt-6 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <h3 className="text-lg font-semibold">Evidence</h3>
+                        <p className="mt-1 text-sm text-ink/55">
+                          Source chunks used by retrieval for this answer.
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <CitationSortControl
+                          value={citationSort}
+                          onChange={setCitationSort}
+                        />
+                        <Database className="hidden h-5 w-5 text-marine sm:block" aria-hidden="true" />
+                      </div>
+                    </div>
+                    <div className="mt-4 grid gap-3">
+                      {sortedChunks.map((chunk) => (
+                        <CitationCard
+                          key={`${chunk.document_id}-${chunk.chunk_index}`}
+                          chunk={chunk}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                </article>
+              )}
+            </div>
           </section>
         ) : (
           <section className="flex-1 py-6">
@@ -510,6 +577,85 @@ function CompareBar({
   );
 }
 
+function FocusCourseStrip({
+  courses,
+  onAsk,
+  onBrowse,
+}: {
+  courses: Course[];
+  onAsk: (course: Course) => void;
+  onBrowse: () => void;
+}) {
+  if (courses.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="mx-auto mt-6 max-w-3xl border-t border-line pt-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-2 text-sm font-semibold text-ink/62">
+          <Layers3 className="h-4 w-4 text-marine" aria-hidden="true" />
+          Focus courses
+        </div>
+        <button
+          className="text-left text-sm font-semibold text-marine transition hover:text-ink sm:text-right"
+          type="button"
+          onClick={onBrowse}
+        >
+          Browse catalog
+        </button>
+      </div>
+      <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+        {courses.map((course) => (
+          <button
+            className="h-9 shrink-0 rounded-full border border-line bg-transparent px-3 text-sm font-semibold text-ink/70 transition hover:border-ink hover:bg-panel hover:text-ink"
+            key={course.slug}
+            type="button"
+            onClick={() => onAsk(course)}
+            title={`Ask about ${course.name}`}
+          >
+            {course.codes[0] || course.name}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CitationSortControl({
+  value,
+  onChange,
+}: {
+  value: CitationSort;
+  onChange: (value: CitationSort) => void;
+}) {
+  const options: Array<{ label: string; value: CitationSort }> = [
+    { label: "Best match", value: "match" },
+    { label: "Newest", value: "newest" },
+    { label: "Oldest", value: "oldest" },
+  ];
+
+  return (
+    <div className="grid h-10 grid-cols-3 rounded-lg border border-line bg-panel p-1 sm:w-80">
+      {options.map((option) => (
+        <button
+          className={[
+            "rounded-md px-2 text-xs font-semibold transition",
+            option.value === value
+              ? "bg-ink text-paper"
+              : "text-ink/60 hover:bg-paper",
+          ].join(" ")}
+          key={option.value}
+          type="button"
+          onClick={() => onChange(option.value)}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function CourseSearch({
   value,
   onChange,
@@ -658,6 +804,8 @@ function CourseDetailPanel({
   error: string | null;
   onAsk: (course: Course) => void;
 }) {
+  const sourceStats = getSourceStats(documents);
+
   if (!course) {
     return (
       <aside className="rounded-lg border border-dashed border-line bg-panel p-5 shadow-soft">
@@ -715,6 +863,14 @@ function CourseDetailPanel({
           <BookOpen className="h-5 w-5 text-gold" aria-hidden="true" />
         </div>
 
+        {!isLoading && documents.length > 0 && (
+          <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+            <MiniStat label="OMSC" value={String(sourceStats.omscentral)} />
+            <MiniStat label="Reddit" value={String(sourceStats.reddit)} />
+            <MiniStat label="Chunks" value={String(sourceStats.chunks)} />
+          </div>
+        )}
+
         {error && (
           <p className="mt-3 rounded-lg border border-clay/30 bg-clay/10 px-3 py-2 text-sm text-clay">
             {error}
@@ -726,6 +882,10 @@ function CourseDetailPanel({
             <div className="flex items-center gap-2 rounded-lg border border-line bg-paper p-3 text-sm text-ink/60">
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
               Loading source documents
+            </div>
+          ) : documents.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-line bg-paper p-4 text-sm leading-6 text-ink/60">
+              No source documents are attached to this course yet.
             </div>
           ) : (
             documents.slice(0, 12).map((document) => (
@@ -743,13 +903,16 @@ function SourceDocumentCard({ document }: { document: CourseDocument }) {
     <article className="rounded-lg border border-line bg-paper p-3">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-marine">
-            {compactSource(document.source)} · {formatDate(document.published_at)}
-          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <SourceBadge source={document.source} />
+            <span className="text-xs font-semibold uppercase tracking-[0.14em] text-ink/45">
+              {formatDate(document.published_at)}
+            </span>
+          </div>
           <h4 className="mt-2 text-sm font-semibold leading-5">{document.title}</h4>
         </div>
         <span className="rounded-full bg-panel px-2 py-1 text-xs font-semibold text-ink/60">
-          {document.chunk_count}
+          {document.chunk_count} chunks
         </span>
       </div>
       <a
@@ -777,10 +940,16 @@ function CitationCard({
     <article className="overflow-hidden rounded-lg border border-line bg-paper p-4">
       <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-marine">
-            <span>{compactSource(chunk.source)}</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <SourceBadge source={chunk.source} />
             <span className="h-1 w-1 rounded-full bg-line" />
-            <span>{formatDate(chunk.published_at)}</span>
+            <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink/45">
+              {formatDate(chunk.published_at)}
+            </span>
+            <span className="h-1 w-1 rounded-full bg-line" />
+            <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink/45">
+              Match {formatNumber(chunk.score, 2)}
+            </span>
           </div>
           <h3 className="mt-2 break-words text-sm font-semibold leading-5 sm:text-base sm:leading-6">
             {title}
@@ -816,13 +985,13 @@ function CitationCard({
 }
 
 function formatCitationTitle(chunk: QueryResponse["chunks"][number]) {
+  if (chunk.title) {
+    return chunk.title.replace(/\s+review by .+$/i, " review");
+  }
   if (chunk.course_name) {
-    return `${chunk.course_name} review`;
+    return `${chunk.course_name} evidence`;
   }
-  if (!chunk.title) {
-    return "Retrieved evidence";
-  }
-  return chunk.title.replace(/\s+review by .+$/i, " review");
+  return "Retrieved evidence";
 }
 
 function formatEvidenceText(text: string) {
@@ -833,12 +1002,12 @@ function MarkdownAnswer({ text }: { text: string }) {
   const blocks = parseMarkdownBlocks(text);
 
   return (
-    <div className="mt-4 space-y-4 text-base leading-7 text-paper/92 sm:text-lg sm:leading-8">
+    <div className="mt-6 space-y-5 text-base leading-8 text-ink/82 sm:text-lg sm:leading-9">
       {blocks.map((block, index) => {
         if (block.type === "heading") {
           return (
             <h3
-              className="text-xl font-semibold leading-7 text-paper"
+              className="text-xl font-semibold leading-7 text-ink"
               key={`${block.type}-${index}`}
             >
               {renderInlineMarkdown(block.lines[0])}
@@ -849,7 +1018,7 @@ function MarkdownAnswer({ text }: { text: string }) {
         if (block.type === "ordered-list") {
           return (
             <ol
-              className="list-decimal space-y-2 pl-5 marker:text-paper/55"
+              className="list-decimal space-y-2 pl-5 marker:text-ink/45"
               key={`${block.type}-${index}`}
             >
               {block.lines.map((line, lineIndex) => (
@@ -864,7 +1033,7 @@ function MarkdownAnswer({ text }: { text: string }) {
         if (block.type === "unordered-list") {
           return (
             <ul
-              className="list-disc space-y-2 pl-5 marker:text-paper/55"
+              className="list-disc space-y-2 pl-5 marker:text-ink/45"
               key={`${block.type}-${index}`}
             >
               {block.lines.map((line, lineIndex) => (
@@ -888,7 +1057,7 @@ function MarkdownAnswer({ text }: { text: string }) {
         if (block.type === "quote") {
           return (
             <blockquote
-              className="border-l-2 border-paper/25 pl-4 text-paper/78"
+              className="border-l-2 border-gold pl-4 text-ink/68"
               key={`${block.type}-${index}`}
             >
               {renderInlineMarkdown(block.lines.join(" ").replace(/^>\s?/, ""))}
@@ -993,13 +1162,13 @@ function MarkdownTable({ block }: { block: MarkdownBlock }) {
   const [header, ...body] = rows;
 
   return (
-    <div className="overflow-x-auto rounded-lg border border-paper/15">
+    <div className="overflow-x-auto rounded-lg border border-line">
       <table className="min-w-full border-collapse text-left text-sm leading-6">
-        <thead className="bg-paper/10 text-paper">
+        <thead className="bg-panel text-ink">
           <tr>
             {header.map((cell, index) => (
               <th
-                className="border-b border-paper/15 px-3 py-2 font-semibold"
+                className="border-b border-line px-3 py-2 font-semibold"
                 key={`${cell}-${index}`}
               >
                 {renderInlineMarkdown(cell)}
@@ -1009,10 +1178,10 @@ function MarkdownTable({ block }: { block: MarkdownBlock }) {
         </thead>
         <tbody>
           {body.map((row, rowIndex) => (
-            <tr className="border-t border-paper/10" key={rowIndex}>
+            <tr className="border-t border-line" key={rowIndex}>
               {row.map((cell, cellIndex) => (
                 <td
-                  className="align-top px-3 py-2 text-paper/82"
+                  className="align-top px-3 py-2 text-ink/72"
                   key={`${rowIndex}-${cellIndex}`}
                 >
                   {renderInlineMarkdown(cell)}
@@ -1048,14 +1217,14 @@ function renderInlineMarkdown(text: string): ReactNode[] {
     const token = match[0];
     if (token.startsWith("**")) {
       nodes.push(
-        <strong className="font-semibold text-paper" key={`${match.index}-strong`}>
+        <strong className="font-semibold text-ink" key={`${match.index}-strong`}>
           {token.slice(2, -2)}
         </strong>,
       );
     } else {
       nodes.push(
         <code
-          className="rounded bg-paper/10 px-1.5 py-0.5 text-[0.9em] text-paper"
+          className="rounded border border-line bg-panel px-1.5 py-0.5 text-[0.9em] text-ink"
           key={`${match.index}-code`}
         >
           {token.slice(1, -1)}
@@ -1092,4 +1261,66 @@ function MiniStat({ label, value }: { label: string; value: string }) {
       <p className="mt-1 font-semibold text-ink">{value}</p>
     </div>
   );
+}
+
+function SourceBadge({ source }: { source: string | null }) {
+  return (
+    <span
+      className={[
+        "inline-flex h-6 items-center gap-1.5 rounded-full px-2.5 text-[11px] font-semibold uppercase tracking-[0.12em]",
+        source === "reddit"
+          ? "bg-clay/12 text-clay"
+          : source === "omscentral"
+            ? "bg-marine/12 text-marine"
+            : "bg-ink/10 text-ink/60",
+      ].join(" ")}
+    >
+      <Database className="h-3 w-3" aria-hidden="true" />
+      {compactSource(source)}
+    </span>
+  );
+}
+
+function getSourceStats(documents: CourseDocument[]) {
+  return documents.reduce(
+    (stats, document) => {
+      if (document.source === "reddit") {
+        stats.reddit += 1;
+      } else if (document.source === "omscentral") {
+        stats.omscentral += 1;
+      }
+      stats.chunks += document.chunk_count;
+      return stats;
+    },
+    { omscentral: 0, reddit: 0, chunks: 0 },
+  );
+}
+
+function normalizePriorityIndex(index: number) {
+  return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+}
+
+function compareChunks(
+  first: QueryResponse["chunks"][number],
+  second: QueryResponse["chunks"][number],
+  sort: CitationSort,
+) {
+  if (sort === "match") {
+    return second.score - first.score;
+  }
+
+  const firstTime = getCitationTime(first.published_at);
+  const secondTime = getCitationTime(second.published_at);
+  if (firstTime === secondTime) {
+    return second.score - first.score;
+  }
+  return sort === "newest" ? secondTime - firstTime : firstTime - secondTime;
+}
+
+function getCitationTime(value: string | null) {
+  if (!value) {
+    return 0;
+  }
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? 0 : time;
 }

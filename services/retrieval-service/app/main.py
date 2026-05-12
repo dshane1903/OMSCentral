@@ -36,6 +36,21 @@ SOURCE_HINTS = {
     "reddit": ("reddit", "subreddit", "r/omscs", "discussion post", "discussion posts", "thread", "threads"),
     "omscentral": ("omscentral", "oms central"),
 }
+COURSE_ALIASES = {
+    "introduction-to-graduate-algorithms": ("ga",),
+    "machine-learning": ("ml",),
+    "artificial-intelligence": ("ai",),
+    "computer-networks": ("cn",),
+    "software-development-process": ("sdp",),
+    "graduate-introduction-to-operating-systems": ("gios", "ios"),
+    "advanced-operating-systems": ("aos",),
+    "database-systems-concepts-and-design": ("dbs", "database systems"),
+    "human-computer-interaction": ("hci",),
+    "machine-learning-for-trading": ("ml4t",),
+    "deep-learning": ("dl",),
+    "reinforcement-learning-and-decision-making": ("rl", "reinforcement learning"),
+    "natural-language-processing": ("nlp",),
+}
 
 
 @app.on_event("startup")
@@ -465,6 +480,9 @@ def resolve_course_scopes(question: str) -> list[dict[str, Any]]:
             matched[course["slug"]] = course
         if _phrase_matches(normalized_question, name_phrase):
             matched[course["slug"]] = course
+        for alias in COURSE_ALIASES.get(course["slug"], ()):
+            if _alias_matches(normalized_question, _normalize_text(alias)):
+                matched[course["slug"]] = course
 
     return list(matched.values())
 
@@ -479,6 +497,14 @@ def _normalize_text(value: str) -> str:
 
 def _phrase_matches(normalized_question: str, normalized_phrase: str) -> bool:
     return len(normalized_phrase) >= 6 and normalized_phrase in normalized_question
+
+
+def _alias_matches(normalized_question: str, normalized_alias: str) -> bool:
+    if not normalized_alias:
+        return False
+    if len(normalized_alias) >= 6:
+        return _phrase_matches(normalized_question, normalized_alias)
+    return normalized_alias in normalized_question.split()
 
 
 def _fuse_candidates(

@@ -33,7 +33,7 @@ MAX_RETRIES = 3
 def amqp_url() -> str:
     settings = get_settings()
     return (
-        f"amqp://{settings.rabbitmq_user}:{settings.rabbitmq_password}"
+        f"{settings.rabbitmq_scheme}://{settings.rabbitmq_user}:{settings.rabbitmq_password}"
         f"@{settings.rabbitmq_host}:{settings.rabbitmq_port}/"
     )
 

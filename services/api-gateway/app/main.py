@@ -11,10 +11,14 @@ from shared.schemas.models import (
     CourseCatalogEntry,
     CourseDocumentsResponse,
     CourseListResponse,
+    DeleteDocumentsRequest,
+    DeleteDocumentsResponse,
     IndexCoursesRequest,
     IndexCoursesResponse,
     IndexJobStatus,
     IndexRedditRequest,
+    ManualRedditDocumentRequest,
+    ManualRedditDocumentResponse,
     OMSCentralScrapeRequest,
     OMSCentralScrapeResponse,
     ProcessDocumentsRequest,
@@ -164,6 +168,52 @@ async def scrape_reddit(request: RedditScrapeRequest) -> RedditScrapeResponse:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return RedditScrapeResponse.model_validate(payload)
+
+
+@app.post(
+    "/sources/reddit/manual",
+    response_model=ManualRedditDocumentResponse,
+    dependencies=[Depends(require_admin)],
+)
+async def ingest_manual_reddit_source(
+    request: ManualRedditDocumentRequest,
+) -> ManualRedditDocumentResponse:
+    try:
+        payload = await post_json(
+            f"{settings.ingestion_service_url}/sources/reddit/manual",
+            request.model_dump(mode="json"),
+            timeout=300.0,
+        )
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in {404, 422}:
+            raise HTTPException(
+                status_code=exc.response.status_code,
+                detail=exc.response.json().get("detail"),
+            ) from exc
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return ManualRedditDocumentResponse.model_validate(payload)
+
+
+@app.post(
+    "/documents/delete",
+    response_model=DeleteDocumentsResponse,
+    dependencies=[Depends(require_admin)],
+)
+async def delete_documents(
+    request: DeleteDocumentsRequest,
+) -> DeleteDocumentsResponse:
+    try:
+        payload = await post_json(
+            f"{settings.ingestion_service_url}/documents/delete",
+            request.model_dump(),
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return DeleteDocumentsResponse.model_validate(payload)
 
 
 @app.post(
