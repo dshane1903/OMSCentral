@@ -52,19 +52,24 @@ and `NLP`.
 OMSCS Lens is built as a small RAG system with separate services for ingestion,
 processing, retrieval, embedding, and generation.
 
-```text
-Browser
-  -> CloudFront
-  -> API Gateway
-  -> Retrieval Service
-  -> LLM Service
+```mermaid
+flowchart LR
+  User["User Browser"] --> CloudFront["CloudFront"]
+  CloudFront --> S3["S3 Frontend"]
+  CloudFront --> ALB["Application Load Balancer"]
+  ALB --> API["API Gateway"]
 
-Ingestion Service
-  -> Postgres
-  -> RabbitMQ / Amazon MQ
-  -> Processing Service
-  -> Embedding Service
-  -> pgvector chunks
+  API --> Retrieval["Retrieval Service"]
+  API --> Ingestion["Ingestion Service"]
+  Retrieval --> LLM["LLM Service"]
+  Retrieval --> Redis[("Redis Cache")]
+  Retrieval --> Postgres[("Postgres + pgvector")]
+
+  Ingestion --> Postgres
+  Ingestion --> MQ["Amazon MQ / RabbitMQ"]
+  MQ --> Processing["Processing Service"]
+  Processing --> Embedding["Embedding Service"]
+  Processing --> Postgres
 ```
 
 ### Services
